@@ -3,7 +3,8 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { assertBytes, assertLabel, toEpoch, utf8 } from "./encoding.js";
+import { assertLabel, takeBytes, toEpoch, utf8 } from "./encoding.js";
+import { EngramCryptoError } from "./errors.js";
 
 /** The only PRF salt Engram uses: sha256("engram.prf.v1"). One passkey ceremony per session. */
 export const ROOT_SALT: Uint8Array = sha256(utf8("engram.prf.v1"));
@@ -27,8 +28,8 @@ export function hkdf32(ikm: Uint8Array, info: string, salt: Uint8Array = HKDF_SA
   return hkdf(sha256, ikm, salt, utf8(info), 32);
 }
 
-function assertPrf(prfOutput: Uint8Array): void {
-  assertBytes(prfOutput, 32, "prfOutput");
+function takePrf(prfOutput: Uint8Array): Uint8Array<ArrayBuffer> {
+  return takeBytes(prfOutput, "prfOutput", 32);
 }
 
 /**
@@ -37,31 +38,37 @@ function assertPrf(prfOutput: Uint8Array): void {
  */
 export function deriveAccountWith(candidate: (counter: number) => Uint8Array): OwnerAccount {
   for (let counter = 0; counter <= MAX_ACCOUNT_COUNTER; counter++) {
-    const key = candidate(counter);
-    assertBytes(key, 32, "account key candidate");
+    const key = takeBytes(candidate(counter), "account key candidate", 32); // private copy (BUGLOG B5, B6)
     const scalar = BigInt("0x" + bytesToHex(key));
-    if (scalar === 0n || scalar >= SECP256K1_N) continue;
+    if (scalar === 0n || scalar >= SECP256K1_N) {
+      key.fill(0);
+      continue;
+    }
     const publicKey = secp256k1.getPublicKey(key, false);
     return { accountKey: key, publicKey, owner: getEvmAddress(publicKey), counter };
   }
-  throw new Error("no valid secp256k1 scalar after 256 candidates");
+  throw new EngramCryptoError("INPUT_INVALID", "no valid secp256k1 scalar after 256 candidates");
 }
 
 export function deriveAccount(prfOutput: Uint8Array): OwnerAccount {
-  assertPrf(prfOutput);
-  return deriveAccountWith((counter) => hkdf32(prfOutput, `engram.v1/account/secp256k1/${counter}`));
+  const prf = takePrf(prfOutput);
+  try {
+    return deriveAccountWith((counter) => hkdf32(prf, `engram.v1/account/secp256k1/${counter}`));
+  } finally {
+    prf.fill(0);
+  }
 }
 
 /** Opaque onchain namespace id: reveals nothing about the label. */
 export function deriveNamespaceId(prfOutput: Uint8Array, label: string): Uint8Array {
-  assertPrf(prfOutput);
+  const prf = takePrf(prfOutput);
   assertLabel(label);
-  return hkdf32(prfOutput, `engram.v1/nsid/${label}`);
+  return hkdf32(prf, `engram.v1/nsid/${label}`);
 }
 
 /** AES-256-GCM key for one namespace epoch. Reconstructible from the passkey alone. */
 export function deriveNamespaceKey(prfOutput: Uint8Array, label: string, epoch: bigint | number): Uint8Array {
-  assertPrf(prfOutput);
+  const prf = takePrf(prfOutput);
   assertLabel(label);
-  return hkdf32(prfOutput, `engram.v1/nskey/${label}/${toEpoch(epoch).toString(10)}`);
+  return hkdf32(prf, `engram.v1/nskey/${label}/${toEpoch(epoch).toString(10)}`);
 }

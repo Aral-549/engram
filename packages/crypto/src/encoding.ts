@@ -1,4 +1,4 @@
-import { invalid } from "./errors.js";
+import { EngramCryptoError, invalid, type EngramCryptoErrorCode } from "./errors.js";
 
 export type Hex = `0x${string}`;
 
@@ -36,8 +36,31 @@ export function uintBE(value: bigint, byteLength: number): Uint8Array<ArrayBuffe
   return out;
 }
 
-export function assertBytes(value: Uint8Array, length: number, name: string): void {
-  if (!(value instanceof Uint8Array) || value.length !== length) invalid(`${name} must be ${length} bytes`);
+/**
+ * Takes a byte input exactly once: copies it synchronously into fresh memory (`new Uint8Array(x)`, never
+ * `.slice()`, which returns a view for Node Buffers) and validates the COPY's
+ * real length (never the input's `.length` getter). Callers then use only the returned copy, so later
+ * mutation, resizing, or zeroing of the input cannot change what is validated or used (BUGLOG B5, B6).
+ */
+export function takeBytes(
+  value: unknown,
+  name: string,
+  min: number,
+  max: number = min,
+  code: EngramCryptoErrorCode = "INPUT_INVALID",
+): Uint8Array<ArrayBuffer> {
+  const fail = (): never => {
+    throw new EngramCryptoError(code, min === max ? `${name} must be ${min} bytes` : `${name} must be ${min}..${max} bytes`);
+  };
+  if (!(value instanceof Uint8Array)) return fail();
+  let copy: Uint8Array<ArrayBuffer>;
+  try {
+    copy = new Uint8Array(value);
+  } catch {
+    return fail();
+  }
+  if (copy.byteLength < min || copy.byteLength > max) return fail();
+  return copy;
 }
 
 export function assertLabel(label: string): void {
