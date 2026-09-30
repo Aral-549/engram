@@ -26,3 +26,6 @@ indexer/.envio/
 .DS_Store
 *.log
 chain/broadcast/**/dry-run/
+indexer/.envio/
+indexer/envio-env.d.ts
+indexer/generated/

@@ -1,0 +1,86 @@
+# Spec: contracts/indexer.md. All hex values lowercase; ids are deterministic.
+
+type Owner {
+  id: ID!
+  namespaceCount: Int!
+  entryCount: Int!
+  firstSeenAt: BigInt!
+  namespaces: [Namespace!]! @derivedFrom(field: "owner")
+}
+
+type Namespace {
+  id: ID!
+  owner: Owner!
+  nsId: String! @index
+  epoch: BigInt!
+  nextSeq: BigInt!
+  granteeCount: Int!
+  createdAt: BigInt!
+  entries: [Entry!]! @derivedFrom(field: "namespace")
+  grants: [Grant!]! @derivedFrom(field: "namespace")
+}
+
+type Entry @index(fields: ["namespace", "seq"]) {
+  id: ID!
+  namespace: Namespace!
+  seq: BigInt!
+  epoch: BigInt!
+  byOwner: Boolean!
+  agentId: BigInt!
+  ciphertext: String!
+  txHash: String!
+  blockNumber: BigInt!
+  blockTime: BigInt!
+}
+
+type Grant @index(fields: ["agent", "active"]) {
+  id: ID!
+  namespace: Namespace!
+  agent: Agent!
+  scope: Int!
+  expiry: BigInt!
+  active: Boolean!
+  grantedAt: BigInt!
+  revokedAt: BigInt
+  wrappedKeys: [WrappedKey!]! @derivedFrom(field: "grant")
+}
+
+type WrappedKey {
+  id: ID!
+  grant: Grant!
+  epoch: BigInt!
+  wrap: String!
+}
+
+type Agent {
+  id: ID!
+  tokenOwner: String! @index
+  agentURI: String
+  x25519Pub: String
+  operator: String
+  keysSetBy: String
+  keysCurrent: Boolean! @index
+  activeGrantCount: Int!
+  entriesWritten: Int!
+  registeredAt: BigInt
+  grants: [Grant!]! @derivedFrom(field: "agent")
+}
+
+type DailyStat {
+  id: ID!
+  entries: Int!
+  grantsSet: Int!
+  revokes: Int!
+  activeOwners: Int!
+}
+
+type OwnerDay {
+  id: ID!
+}
+
+type IndexerError {
+  id: ID!
+  kind: String!
+  detail: String!
+  blockNumber: BigInt!
+}

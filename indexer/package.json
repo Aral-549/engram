@@ -1,0 +1,27 @@
+{
+  "name": "@engram/indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Envio HyperIndex indexer for Engram (spec: contracts/indexer.md)",
+  "license": "MIT",
+  "scripts": {
+    "codegen": "envio codegen",
+    "dev": "envio dev",
+    "start": "envio start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --test-timeout=20000",
+    "test:integration": "INTEGRATION=1 vitest run"
+  },
+  "dependencies": {
+    "envio": "3.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "4.1.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

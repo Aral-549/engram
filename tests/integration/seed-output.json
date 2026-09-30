@@ -1,0 +1,22 @@
+{
+  "_note": "Written by scripts/seed-testnet.ts. Public data only.",
+  "chainId": 10143,
+  "registry": "0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31",
+  "owner": "0xc6a20046234d9d83c2cd9cce21874859deda2b0e",
+  "agentId": "1961",
+  "nsId": "0x98517b9cafa75299286777f0cf649f8a64f9d4ccec0566850b03270653a0912d",
+  "startBlock": 67065145,
+  "endBlock": 67065169,
+  "epochAfter": "1",
+  "nextSeqAfter": "3",
+  "entriesThisRun": 3,
+  "txs": {
+    "setAgentKeys": "0x8a081c62d3c5d64a8270ecee859389d990fa91563a11e04f8539f835149ed40a",
+    "createNamespace(direct)": "0x0b40fea8ac75b945a3474a60be6fc5aae73757269704b3fe0d577cff4a30c967",
+    "appendAsOwner#1(relay)": "0xfc037b872fec53e8e137fcaaf185f4a5eee10be31dac42dcf922507732bf443d",
+    "appendAsOwner#2(relay)": "0x640e71f2d6c0bf1e24b1e6d529896c658e0af5d0036c74107ecb1ef9986e4d84",
+    "grant(relay)": "0xb3e35f578a8b4a25e3aee15f912bcd59c942616a8ff7bd8f7d32024b72ed60cd",
+    "appendAsAgent": "0xcf9d9c04043e2a898b43e691b4290c5650d08d29f56bc0c2c256ae2695a11dd5",
+    "rotate(relay)": "0x90c6fd4bfb6285d94828b6d50f34100c44becc130fe2de7ed1ea3abbcbda51b3"
+  }
+}

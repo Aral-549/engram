@@ -7,53 +7,77 @@ anchor**: everything it serves is either ciphertext (authenticated by crypto AAD
 onchain views, and the SDK checks completeness against `namespaceOf().nextSeq`.
 
 ## Inputs
-- MemoryRegistry events (memory-registry.md), Monad testnet, from the deployment block.
-- ERC-8004 IdentityRegistry `Registered` / `Transfer` events (exact event signatures to be confirmed
-  from the deployed ABI before implementation).
+- Monad testnet (10143) via HyperSync (`https://10143.hypersync.xyz`, needs `ENVIO_API_TOKEN`).
+- MemoryRegistry `0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31` (deploy block 67062103), events per memory-registry.md.
+- ERC-8004 IdentityRegistry `0x8004A818BFB912233c491871b3d84c89A494BD9e`. Events confirmed against the official
+  ABI (github.com/erc-8004/erc-8004-contracts `abis/IdentityRegistry.json`) and a live `register` tx on testnet
+  (`0x988261ef...5d1d`, agentId 1961):
+  - `Registered(uint256 indexed agentId, string agentURI, address indexed owner)`
+  - `URIUpdated(uint256 indexed agentId, string newURI, address indexed updatedBy)`
+  - `Transfer(address indexed from, address indexed to, uint256 indexed tokenId)` (mint, transfer, burn)
 
 ## Outputs (GraphQL entities)
-- `Owner { id: address, namespaceCount, entryCount, firstSeenAt }`
-- `Namespace { id: owner-nsId, owner, nsId, epoch, nextSeq, granteeCount, createdAt }`
-- `Entry { id: owner-nsId-seq, namespace, seq, epoch, byOwner, agentId, ciphertext, txHash, blockTime }`
-- `Grant { id: owner-nsId-agentId, namespace, agent, scope, expiry, active, grantedAt, revokedAt }`
-- `WrappedKey { id: owner-nsId-agentId-epoch, grant, epoch, wrap }`
-- `Agent { id: agentId, tokenOwner, x25519Pub, operator, tokenURI, activeGrantCount, entriesWritten }`
-- `DailyStat { id: yyyy-mm-dd, entries, grants, revokes, activeOwners }` (derived; powers the traction chart)
+All hex values lowercase. Ids are deterministic so reorg replays never duplicate.
+
+| Entity | id | Fields |
+|---|---|---|
+| `Owner` | owner address | `namespaceCount`, `entryCount`, `firstSeenAt` |
+| `Namespace` | `owner-nsId` | `owner`, `nsId`, `epoch`, `nextSeq`, `granteeCount`, `createdAt` |
+| `Entry` | `owner-nsId-seq` | `namespace`, `seq`, `epoch`, `byOwner`, `agentId`, `ciphertext`, `txHash`, `blockNumber`, `blockTime` |
+| `Grant` | `owner-nsId-agentId` | `namespace`, `agent`, `scope`, `expiry`, `active`, `grantedAt`, `revokedAt` |
+| `WrappedKey` | `owner-nsId-agentId-epoch` | `grant`, `epoch`, `wrap` |
+| `Agent` | agentId (decimal) | `tokenOwner`, `agentURI`, `x25519Pub`, `operator`, `keysSetBy`, `keysCurrent`, `activeGrantCount`, `entriesWritten`, `registeredAt` |
+| `DailyStat` | `yyyy-mm-dd` (UTC of block time) | `entries`, `grantsSet`, `revokes`, `activeOwners` |
+| `OwnerDay` | `owner-yyyy-mm-dd` | marker used to count `activeOwners` once per owner per day |
+| `IndexerError` | `block-logIndex` | `kind`, `detail` (events that violate registry invariants; should never exist) |
+
+`Agent.keysCurrent` mirrors the contract's rule (BUGLOG R2/R3): true iff keys are set and `keysSetBy` equals the
+current `tokenOwner` and the token is not burned. `keysSetBy` is the token holder when `AgentKeysSet` was
+processed (the contract only accepts `setAgentKeys` from the holder).
 
 ## Behavior cases (input -> expected output)
 | # | Input event sequence | Expected entity state | Notes |
 |---|---|---|---|
-| 1 | `NamespaceCreated(O,N)` | Namespace(O-N) epoch 0, nextSeq 0; Owner O namespaceCount 1 | |
-| 2 | 3 x `EntryAppended(O,N,seq 0..2)` | 3 Entry rows; Namespace.nextSeq 3; Owner.entryCount 3 | |
-| 3 | `GrantSet(O,N,7,READ,exp)` + `KeyWrapped(O,N,7,0,w)` | Grant active, WrappedKey(epoch 0); Agent 7 activeGrantCount 1 | |
-| 4 | `GrantSet` again for same (O,N,7) with READ_WRITE | same Grant row updated, not duplicated; activeGrantCount still 1 | |
-| 5 | `GrantRevoked(O,N,7)` + `EpochRotated(O,N,1)` | Grant inactive with revokedAt; Namespace.epoch 1; activeGrantCount 0 | |
-| 6 | `AgentKeysSet(7,k,op)` then again with k2 | Agent 7 x25519Pub = k2 | latest wins |
-| 7 | ERC-8004 `Transfer` of token 7 | Agent.tokenOwner updated | |
-| 8 | `EntryAppended` by agent 7 | Entry.byOwner false, agentId 7; Agent.entriesWritten += 1 | |
-| 9 | events in two txs in the same block | ordered by log index; seq order preserved | |
+| 1 | `NamespaceCreated(O,N)` | Namespace(O-N) epoch 0, nextSeq 0, granteeCount 0; Owner O namespaceCount 1 | |
+| 2 | case 1 + 3 x `EntryAppended(O,N,seq 0..2, byOwner)` | 3 Entry rows with ciphertext hex and txHash; Namespace.nextSeq 3; Owner.entryCount 3 | |
+| 3 | case 1 + `GrantSet(O,N,7,READ,exp)` + `KeyWrapped(O,N,7,0,w)` | Grant active, scope 1, expiry exp; WrappedKey(epoch 0, wrap w); Agent 7 activeGrantCount 1; Namespace.granteeCount 1 | |
+| 4 | case 3 + `GrantSet(O,N,7,READ_WRITE,exp2)` | same Grant row, scope 3, expiry exp2; activeGrantCount and granteeCount still 1 | re-grant |
+| 5 | case 3 + `GrantRevoked(O,N,7)` + `EpochRotated(O,N,1)` | Grant inactive with revokedAt; Namespace.epoch 1; activeGrantCount 0; granteeCount 0 | |
+| 6 | `AgentKeysSet(7,k,op)` then `AgentKeysSet(7,k2,op2)` | Agent 7 x25519Pub k2, operator op2 | latest wins |
+| 7 | `Registered(7,uri,H)` + `Transfer(0,H,7)` + `AgentKeysSet(7,k,op)`, then `Transfer(H,X,7)` | tokenOwner X, keysCurrent false; after `AgentKeysSet` again: keysSetBy X, keysCurrent true | mirrors R2 |
+| 8 | case 3 + `EntryAppended(O,N,seq, byOwner=false, agentId 7)` | Entry.byOwner false, agentId 7; Agent 7 entriesWritten 1 | |
+| 9 | two `EntryAppended` in the same block | both rows present, seq order preserved | |
+| 10 | `Registered(7,uri,H)` | Agent 7 agentURI uri, registeredAt set | |
+| 11 | `URIUpdated(7,uri2,H)` | Agent 7 agentURI uri2 | |
+| 12 | `Transfer(H,0x0,7)` (burn) | tokenOwner 0x0, keysCurrent false | |
+| 13 | `GrantRevoked` for a grant already inactive, or `EntryAppended` for an unknown namespace | no counter goes negative; IndexerError row recorded; handler does not throw | defensive |
+| 14 | events on two different days | two DailyStat rows; an owner active twice on one day counts once in activeOwners | |
+| 15 | revoke then re-grant the same agent | Grant active again, revokedAt cleared; activeGrantCount back to 1 | |
 
 ## Queries the SDK depends on (stable API)
 - entries for `(owner, nsId)` with `seq >= since`, ordered by seq, page size 500
 - active grants for `agentId` (agent inbox)
 - wrapped keys for `(owner, nsId, agentId)` all epochs
 - grants for `owner` (vault dashboard)
+- agents with `keysCurrent = true` (vault agent picker)
 
 ## Edge cases that must be covered
-- Chain reorg: rely on Envio reorg handling; entries re-emitted must not duplicate (ids are deterministic).
-- Event for an unknown namespace (should be impossible) -> log an error entity, do not crash the handler.
-- Ciphertext stored as hex; no decoding or decryption in the indexer.
-- Lag target: entry queryable within 3 s of inclusion (Monad finality is ~600 ms). Measure in the integration test.
+- Chain reorg: rely on Envio reorg handling; deterministic ids mean replays overwrite, never duplicate.
+- Handlers run twice under Envio preload optimization: handlers only use `context` reads and writes.
+- Ciphertext and wraps stored as hex; no decoding or decryption in the indexer.
+- Lag target: entry queryable within 3 s of inclusion (Monad finality ~600 ms). Measured in the integration test.
 
 ## Explicitly out of scope
 - Decryption or any key material (never reaches the indexer).
 - Being the only read path: the SDK can fall back to `eth_getLogs` against RPC.
+- Time-based expiry: `Grant.active` flips only on `GrantRevoked` (including prunes). Expiry is exposed as a field;
+  consumers compare it to the current time.
 
 ## Logging
-Handlers log `{ stage:"indexer", event, owner?, nsId?, agentId?, block, logIndex }` at debug level.
+Handlers log `{ stage:"indexer", event, owner?, nsId?, agentId?, block, logIndex }` at debug level via `context.log`.
 
 ## Status
 - [x] Drafted
-- [ ] Reviewed by a human
+- [x] Reviewed by a human (approved to build 2026-10-01)
 - [ ] Implementation matches this contract
 - [ ] Golden tests exist for every behavior case above

@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=./node_modules/envio/evm.schema.json
+# Spec: contracts/indexer.md
+name: engram-indexer
+description: Engram passkey-owned AI memory -- MemoryRegistry + ERC-8004 IdentityRegistry on Monad
+contracts:
+  - name: MemoryRegistry
+    events:
+      - event: "NamespaceCreated(address indexed owner, bytes32 indexed nsId)"
+      - event: "EntryAppended(address indexed owner, bytes32 indexed nsId, uint64 seq, uint64 epoch, bool byOwner, uint256 indexed agentId, bytes ciphertext)"
+      - event: "GrantSet(address indexed owner, bytes32 indexed nsId, uint256 indexed agentId, uint8 scope, uint64 expiry)"
+      - event: "KeyWrapped(address indexed owner, bytes32 indexed nsId, uint256 indexed agentId, uint64 epoch, bytes wrap)"
+      - event: "GrantRevoked(address indexed owner, bytes32 indexed nsId, uint256 indexed agentId)"
+      - event: "EpochRotated(address indexed owner, bytes32 indexed nsId, uint64 newEpoch)"
+      - event: "AgentKeysSet(uint256 indexed agentId, bytes32 x25519Pub, address operator)"
+  - name: IdentityRegistry
+    events:
+      - event: "Registered(uint256 indexed agentId, string agentURI, address indexed owner)"
+      - event: "URIUpdated(uint256 indexed agentId, string newURI, address indexed updatedBy)"
+      - event: "Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
+chains:
+  - id: 10143 # Monad testnet, HyperSync https://10143.hypersync.xyz
+    start_block: 0 # HyperSync fast-forwards to the first relevant block
+    contracts:
+      - name: MemoryRegistry
+        address: "0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31"
+      - name: IdentityRegistry
+        address: "0x8004A818BFB912233c491871b3d84c89A494BD9e"
