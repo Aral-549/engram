@@ -7,7 +7,9 @@ anchor**: everything it serves is either ciphertext (authenticated by crypto AAD
 onchain views, and the SDK checks completeness against `namespaceOf().nextSeq`.
 
 ## Inputs
-- Monad testnet (10143) via HyperSync (`https://10143.hypersync.xyz`, needs `ENVIO_API_TOKEN`).
+- Monad testnet (10143) via HyperSync (`https://10143.hypersync.xyz`, needs an `ENVIO_API_TOKEN` with HyperSync access)
+  for historical sync, Monad public RPC for realtime head tracking (free HyperSync tier is 5 req/min).
+  `config.rpc.yaml` is an RPC-only variant with identical contracts and events (no token needed).
 - MemoryRegistry `0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31` (deploy block 67062103), events per memory-registry.md.
 - ERC-8004 IdentityRegistry `0x8004A818BFB912233c491871b3d84c89A494BD9e`. Events confirmed against the official
   ABI (github.com/erc-8004/erc-8004-contracts `abis/IdentityRegistry.json`) and a live `register` tx on testnet
@@ -104,5 +106,6 @@ Handlers log `{ stage:"indexer", event, owner?, nsId?, agentId?, block, logIndex
 ## Status
 - [x] Drafted
 - [x] Reviewed by a human (approved to build 2026-10-01)
-- [ ] Implementation matches this contract
-- [ ] Golden tests exist for every behavior case above
+- [x] Implementation matches this contract
+- [x] Golden tests exist for every behavior case above (cases 1-15 golden, 16-23 regressions)
+- [x] Integration test against real testnet data passes (RPC data source, 2026-10-01); HyperSync run pending token access

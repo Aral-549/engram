@@ -1,5 +1,7 @@
 # yaml-language-server: $schema=./node_modules/envio/evm.schema.json
 # Spec: contracts/indexer.md
+# RPC-only variant of config.yaml (no HyperSync token needed). Keep contracts/events identical.
+# Used by the integration test when HyperSync is unavailable: ENVIO_CONFIG=config.rpc.yaml
 name: engram-indexer
 description: Engram passkey-owned AI memory -- MemoryRegistry + ERC-8004 IdentityRegistry on Monad
 contracts:
@@ -23,7 +25,7 @@ chains:
     # HyperSync tier (5 req/min) is not spent polling 300 ms blocks.
     rpc:
       - url: https://testnet-rpc.monad.xyz
-        for: realtime
+        for: sync
     # Load-bearing: must include ERC-8004 mints that predate the MemoryRegistry deploy, or tokenOwner and
     # keysCurrent are wrong for those agents (contracts/indexer.md). HyperSync fast-forwards past empty blocks.
     start_block: 0
