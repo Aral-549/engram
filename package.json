@@ -1,0 +1,12 @@
+{
+  "name": "engram",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "test:chain": "cd chain && forge test",
+    "golden:crypto": "uv run --with cryptography==45.0.7 --with pycryptodome==3.23.0 tests/golden/crypto/generate_vectors.py"
+  },
+  "engines": { "node": ">=22" }
+}

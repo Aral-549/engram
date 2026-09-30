@@ -1,0 +1,28 @@
+# secrets -- never commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# deps and build output
+node_modules/
+dist/
+.next/
+out/
+build/
+coverage/
+
+# foundry
+chain/out/
+chain/cache/
+chain/broadcast/*/31337/
+
+# envio
+indexer/generated/
+indexer/.envio/
+
+# misc
+.DS_Store
+*.log
+chain/broadcast/**/dry-run/
