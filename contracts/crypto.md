@@ -88,6 +88,26 @@ Python implementation (`cryptography` + `hashlib`), not by `packages/crypto`, th
 - Key material is never logged, never serialized to JSON, never written to storage. Buffers are
   zeroed after use where the platform allows.
 
+- (review 2026-10-01) Agent X25519 public key must be canonical: top bit of byte 31 clear and u < 2^255-19.
+  Otherwise `INPUT_INVALID` (a non-canonical key yields the same shared secret but a different KEK salt,
+  so the agent could never unwrap). BUGLOG B1.
+- (review) `parseEntry` accepts only the canonical encoding that `encodeEntry` produces (byte-exact
+  re-encoding check). This rejects: documents > 2048 bytes, whitespace padding, BOM, duplicate keys,
+  key reordering, and non-canonical numbers (`1.0`, `1e3`, `-0`). BUGLOG B2, B4.
+- (review) `text` must be well-formed Unicode (no lone surrogates) -> `ENTRY_INVALID` / `INPUT_INVALID`.
+- (review) Every thrown error is an `EngramCryptoError` with a code, including exhausted account
+  candidates (`INPUT_INVALID`). BUGLOG B3.
+- (review) Returned keys are fresh copies; callers may zero their inputs without affecting outputs.
+- (review) Every byte input is copied synchronously at call time (before any `await`) and validated on the
+  copy's real byte length, never on a `.length` getter. Mutating, zeroing, or resizing an input after the
+  call cannot change what is validated or used. BUGLOG B5, B6.
+- Envelope upper bounds: entry > 2077 bytes or wrap > 125 bytes -> `ENVELOPE_INVALID`.
+- Numeric inputs given as JS `number` must be safe integers (<= 2^53-1); larger values must be `bigint`.
+- The label returned by `unwrapNamespaceKey` is owner-asserted display metadata; the wrap AAD binds
+  `nsId`, which is what access is keyed on.
+- `nonce` / `ephemeralPrivate` parameters exist only to reproduce golden vectors. Production code
+  (the SDK) never passes them; passing a fixed nonce in production would break AES-GCM.
+
 ## Explicitly out of scope
 - Running the WebAuthn ceremony -> sdk.md (Mera).
 - Deciding who is allowed to write -> memory-registry.md.

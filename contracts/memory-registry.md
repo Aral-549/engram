@@ -27,19 +27,36 @@ Owner actions (actor = `_msgSender()`, which is `msg.sender` or the verified sig
 - `revoke(bytes32 nsId, uint256[] revokeIds, uint256[] keepIds, bytes[] keepWraps)` -- removes `revokeIds`, then **prunes every remaining expired grant**, then epoch += 1 and re-wraps for every remaining grantee
 - `rotate(bytes32 nsId, uint256[] keepIds, bytes[] keepWraps)` -- same as revoke with no explicit ids (prune expired, epoch += 1, re-wrap)
 
-Rotation rule: an expired grantee must never receive a new epoch key. Pruned grants emit `GrantRevoked`.
+Rotation rule: an expired grantee, or one whose agent keys are no longer current (token transferred or burned), must never receive a new epoch key. Both are pruned on every rotation. Pruned grants emit `GrantRevoked`.
 
 Agent action
 - `appendAsAgent(address owner, bytes32 nsId, uint256 agentId, uint64 epoch, bytes ciphertext)`
+
+Nonce control
+- `useNonce()` -- consumes one owner nonce, invalidating any signed-but-unsubmitted relay call. Relayable
+  (the relay already consumed the nonce; the call itself is a no-op) or direct (increments `nonces[msg.sender]`).
 
 Gasless path
 - `relay(address owner, bytes data, uint256 deadline, bytes signature)` -- EIP-712 domain
   `{name:"EngramMemoryRegistry", version:"1", chainId, verifyingContract}`, struct
   `OwnerCall(address owner, bytes32 dataHash, uint256 nonce, uint256 deadline)`. Allowed selectors: the
-  five owner actions only. Nonce is sequential per owner.
+  five owner actions plus `useNonce`. Nonce is sequential per owner. The owner identity is passed to the
+  self-call through **transient storage** (EIP-1153), not appended calldata, so the executed calldata is
+  byte-identical to the signed `data`.
+
+Agent key validity (review 2026-10-01)
+- `setAgentKeys` records which address set the keys. Keys count as **present** only while
+  `identity.ownerOf(agentId)` is still that address. Read with a raw `staticcall` capped at 100k gas that
+  copies at most 32 bytes: a reverting, burned, gas-exhausting, or malformed reply (short returndata, dirty
+  upper bits) means absent. An identity whose `ownerOf` costs more than 100k gas is permanently "not current"
+  (harmless for the canonical ERC-8004 registry). After an ERC-8004 transfer, the old operator can no longer write and new grants are
+  refused until the new holder sets keys.
+- The registry does **not** validate X25519 canonicality (frozen golden fixtures use arbitrary bytes32 keys).
+  The crypto package rejects non-canonical keys at wrap time and the SDK checks before `setAgentKeys` (BUGLOG B1).
 
 Views: `namespaceOf(owner, nsId) -> (exists, epoch, nextSeq)`, `grantOf(owner, nsId, agentId) -> (scope, expiry)`,
-`granteesOf(owner, nsId) -> uint256[]`, `isActive(owner, nsId, agentId) -> bool`, `agentKeysOf(agentId) -> (x25519Pub, operator)`, `nonces(owner)`.
+`granteesOf(owner, nsId) -> uint256[]`, `isActive(owner, nsId, agentId) -> bool`, `agentKeysOf(agentId) -> (x25519Pub, operator)`, `hasCurrentKeys(agentId) -> bool`, `nonces(owner)`.
+SDKs must check `hasCurrentKeys` before wrapping to `agentKeysOf` (keys of a transferred token are still returned).
 
 Events: `NamespaceCreated(owner, nsId)`, `EntryAppended(owner, nsId, seq, epoch, byOwner, agentId, ciphertext)`,
 `GrantSet(owner, nsId, agentId, scope, expiry)`, `KeyWrapped(owner, nsId, agentId, epoch, wrap)`,
@@ -86,6 +103,14 @@ Setup for all cases: owner O, agents A (id 7) and B (id 9) registered in ERC-800
 | 33 | grantees [7,9], 9 expired; O `rotate(N, [7,9], [w7,w9])` | revert `KeepSetMismatch` | cannot re-key an expired grantee |
 | 34 | O `revoke(N, [], [...], [...])` | revert `NothingToRevoke` | use `rotate` instead |
 | 35 | O `revoke(N, [7,7], ...)` | revert `NotGrantee` (second 7 already removed) | duplicates |
+| 36 | token 7 transferred to X; A's old operator `appendAsAgent` (before X sets keys) | revert `NotAuthorized` | stale keys |
+| 37 | token 7 transferred to X; O `grant(N, 7, ...)` before X sets keys | revert `AgentKeysMissing` | |
+| 38 | token 7 burned (ownerOf reverts); O `grant(N, 7, ...)` | revert `AgentKeysMissing`; `revoke`/`rotate` still work | |
+| 40 | relay whose `data` has a dynamic tail that would run past its end | reverts (ABI decode fails); nothing reads bytes outside the signed data | transient-storage actor |
+| 41 | O signs call c (nonce 0), then relays `useNonce` (nonce 0) or calls `useNonce()` directly; relayer submits c | revert `BadSignature` | cancel pending |
+| 42 | direct `appendAsOwner` with calldata padded by 20 bytes of another owner | acts as msg.sender | no calldata actor |
+| 43 | grantees [7,9], token 9 transferred; O `rotate(N, [7], [w7])` | `GrantRevoked(9)` (pruned), `KeyWrapped` for 7 only; with keepIds [7,9] -> `KeepSetMismatch` | BUGLOG R3 |
+| 44 | identity `ownerOf` returns malformed data (dirty upper bits, short returndata) | treated as "keys not current": `grant` -> `AgentKeysMissing`, append -> `NotAuthorized`, rotate prunes | BUGLOG R3 |
 
 ## Edge cases that must be covered
 - Owner O2 using the same `nsId` bytes as O: independent namespace (keyed by `(owner, nsId)`).
@@ -95,6 +120,19 @@ Setup for all cases: owner O, agents A (id 7) and B (id 9) registered in ERC-800
 - Gas: `revoke`/`rotate` with 16 grantees must stay under the 30M per-tx limit (measure and record in the test).
 - `relay` must not be re-entrant through the self-call (selector allowlist + nonce bumped before the call).
 - Monad charges gas on gas limit, not gas used: the SDK must estimate and not over-provision limits.
+
+Documented, not enforced (review 2026-10-01):
+- **Open decision (needs human approval to change golden case 30):** a new ERC-8004 holder who sets keys
+  inherits existing READ_WRITE grants to that agentId (golden case 30 requires the new operator can append).
+  Alternative: bind each grant to a key version so any key change voids it.
+- Expired-but-unpruned grants count toward `MAX_GRANTEES`; the SDK rotates before adding a 17th agent.
+- Two agents may register the same X25519 key or operator. That is the agent owners' choice (an agent can
+  always forward what it decrypts); grants are to an agentId the user chose.
+- A grantee can flip itself between current and not current (transfer its token away and back), which makes
+  an owner's signed keep set stale so `rotate`/`revoke` revert `KeepSetMismatch`. The owner always recovers
+  by listing that grantee in `revokeIds` (works in both states). The SDK retries once with a fresh keep set.
+- A relay whose inner call reverts leaves the nonce unconsumed; the signature stays valid until its
+  deadline. The SDK uses short deadlines (5 min) and `useNonce` to cancel.
 
 ## Explicitly out of scope
 - Read enforcement and read-expiry (crypto.md; documented forward-only model).
