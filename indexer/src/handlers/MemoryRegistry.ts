@@ -20,7 +20,7 @@ indexer.onEvent({ contract: "MemoryRegistry", event: "NamespaceCreated", fields:
     entryCount: prev?.entryCount ?? 0,
     firstSeenAt: prev?.firstSeenAt ?? ts,
   });
-  await touchDay(context, owner, event.block.timestamp, {});
+  await touchDay(context, event, owner, event.block.timestamp, {});
   logStage(context, event, { owner, nsId: event.params.nsId });
 });
 
@@ -34,6 +34,12 @@ indexer.onEvent(
     if (!ns) {
       recordError(context, event, "UnknownNamespace", `${nsKey} seq ${seq}`);
       return;
+    }
+    // The contract guarantees seq == nextSeq (BUGLOG I2). Anything else is recorded; a duplicate is ignored.
+    if (seq !== ns.nextSeq) {
+      const duplicate = seq < ns.nextSeq && (await context.Entry.get(`${nsKey}-${seq}`)) !== undefined;
+      recordError(context, event, duplicate ? "DuplicateSeq" : "SeqMismatch", `${nsKey} seq ${seq} expected ${ns.nextSeq}`);
+      if (duplicate) return;
     }
     context.Entry.set({
       id: `${nsKey}-${seq}`,
@@ -54,7 +60,7 @@ indexer.onEvent(
       const agent = await loadAgent(context, agentId);
       context.Agent.set({ ...agent, entriesWritten: agent.entriesWritten + 1 });
     }
-    await touchDay(context, owner, event.block.timestamp, { entries: 1 });
+    await touchDay(context, event, owner, event.block.timestamp, { entries: 1 });
     logStage(context, event, { owner, nsId, seq: seq.toString(), byOwner, agentId: agentId.toString(), bytes: (ciphertext.length - 2) / 2 });
   },
 );
@@ -74,7 +80,9 @@ indexer.onEvent({ contract: "MemoryRegistry", event: "GrantSet", fields: TS }, a
   context.Grant.set({
     id,
     namespace_id: nsKey,
+    owner,
     agent_id: agentId.toString(),
+    generation: wasActive ? prev.generation : (prev?.generation ?? 0) + 1,
     scope: Number(scope),
     expiry,
     active: true,
@@ -86,15 +94,19 @@ indexer.onEvent({ contract: "MemoryRegistry", event: "GrantSet", fields: TS }, a
     const agent = await loadAgent(context, agentId);
     context.Agent.set({ ...agent, activeGrantCount: agent.activeGrantCount + 1 });
   }
-  await touchDay(context, owner, event.block.timestamp, { grantsSet: 1 });
+  await touchDay(context, event, owner, event.block.timestamp, { grantsSet: 1 });
   logStage(context, event, { owner, nsId, agentId: agentId.toString(), scope: Number(scope), expiry: expiry.toString(), regrant: wasActive });
 });
 
 indexer.onEvent({ contract: "MemoryRegistry", event: "KeyWrapped" }, async ({ event, context }) => {
   const { owner, nsId, agentId, epoch, wrap } = event.params;
   const gid = grantId(owner, nsId, agentId);
-  if (!(await context.Grant.get(gid))) recordError(context, event, "WrapWithoutGrant", `${gid} epoch ${epoch}`);
-  context.WrappedKey.set({ id: `${gid}-${epoch}`, grant_id: gid, epoch, wrap: lc(wrap) });
+  const grant = await context.Grant.get(gid);
+  if (!grant) {
+    recordError(context, event, "WrapWithoutGrant", `${gid} epoch ${epoch}`);
+    return;
+  }
+  context.WrappedKey.set({ id: `${gid}-${epoch}`, grant_id: gid, generation: grant.generation, epoch, wrap: lc(wrap) });
   logStage(context, event, { owner: lc(owner), nsId, agentId: agentId.toString(), epoch: epoch.toString() });
 });
 
@@ -109,10 +121,12 @@ indexer.onEvent({ contract: "MemoryRegistry", event: "GrantRevoked", fields: TS 
   }
   context.Grant.set({ ...grant, active: false, revokedAt: BigInt(event.block.timestamp) });
   const ns = await context.Namespace.get(namespaceId(owner, nsId));
-  if (ns) context.Namespace.set({ ...ns, granteeCount: Math.max(0, ns.granteeCount - 1) });
   const agent = await loadAgent(context, agentId);
+  const underflow = [ns && ns.granteeCount === 0 ? "granteeCount" : "", agent.activeGrantCount === 0 ? "activeGrantCount" : ""].filter(Boolean);
+  if (underflow.length) recordError(context, event, "CounterUnderflow", `${id}: ${underflow.join(",")}`);
+  if (ns) context.Namespace.set({ ...ns, granteeCount: Math.max(0, ns.granteeCount - 1) });
   context.Agent.set({ ...agent, activeGrantCount: Math.max(0, agent.activeGrantCount - 1) });
-  await touchDay(context, owner, event.block.timestamp, { revokes: 1 });
+  await touchDay(context, event, owner, event.block.timestamp, { revokes: 1 });
   logStage(context, event, { owner, nsId, agentId: agentId.toString() });
 });
 

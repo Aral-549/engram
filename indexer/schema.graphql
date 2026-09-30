@@ -36,10 +36,13 @@ type Entry @index(fields: ["namespace", "seq"]) {
 type Grant @index(fields: ["agent", "active"]) {
   id: ID!
   namespace: Namespace!
+  owner: String! @index
   agent: Agent!
   scope: Int!
   expiry: BigInt!
   active: Boolean!
+  "Increments each time an inactive grant becomes active again; only wraps of this generation are current."
+  generation: Int!
   grantedAt: BigInt!
   revokedAt: BigInt
   wrappedKeys: [WrappedKey!]! @derivedFrom(field: "grant")
@@ -48,6 +51,7 @@ type Grant @index(fields: ["agent", "active"]) {
 type WrappedKey {
   id: ID!
   grant: Grant!
+  generation: Int!
   epoch: BigInt!
   wrap: String!
 }

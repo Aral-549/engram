@@ -19,7 +19,9 @@ contracts:
       - event: "Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
 chains:
   - id: 10143 # Monad testnet, HyperSync https://10143.hypersync.xyz
-    start_block: 0 # HyperSync fast-forwards to the first relevant block
+    # Load-bearing: must include ERC-8004 mints that predate the MemoryRegistry deploy, or tokenOwner and
+    # keysCurrent are wrong for those agents (contracts/indexer.md). HyperSync fast-forwards past empty blocks.
+    start_block: 0
     contracts:
       - name: MemoryRegistry
         address: "0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31"

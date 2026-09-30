@@ -68,3 +68,17 @@ resolved -- it's just hidden until the next rewrite.
 - **Stage/module:** crypto (encoding.ts, envelope.ts, derive.ts)
 - **Regression case added:** `tests/golden/crypto/crypto.regressions3.golden.test.ts` -- B6
 - **Status:** fixed
+
+## 2026-10-01 -- I1: indexer took tokenOwner from ERC-8004 Registered, which can be stale
+- **Symptom:** a contract wallet that transfers its freshly minted agent token (or sets keys, then transfers) inside the ERC-721 receiver callback ends up indexed with tokenOwner = the minter and keysCurrent = true, while onchain `hasCurrentKeys` is false.
+- **Root cause:** the IdentityRegistry emits `Registered(owner)` after `_safeMint` (live receipt: Transfer at logIndex 43, Registered at 45), so `owner` can be stale; the Registered handler overwrote tokenOwner with it.
+- **Stage/module:** indexer (handlers/IdentityRegistry.ts)
+- **Regression case added:** `tests/golden/indexer/indexer.regressions.golden.test.ts` -- cases 16, 17
+- **Status:** fixed
+
+## 2026-10-01 -- I2: EntryAppended did not check seq against nextSeq
+- **Symptom:** a duplicate EntryAppended seq double-counted Owner.entryCount and DailyStat.entries with no IndexerError; a seq gap was accepted silently.
+- **Root cause:** no invariant check that seq == Namespace.nextSeq (the contract guarantees it).
+- **Stage/module:** indexer (handlers/MemoryRegistry.ts)
+- **Regression case added:** `tests/golden/indexer/indexer.regressions.golden.test.ts` -- cases 18-23
+- **Status:** fixed

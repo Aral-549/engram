@@ -7,7 +7,11 @@ export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 /** All ids and address fields are stored lowercase (Envio hands us EIP-55 checksummed addresses). */
 export const lc = (hex: string): string => hex.toLowerCase();
 
-export const dayOf = (unixSeconds: number): string => new Date(unixSeconds * 1000).toISOString().slice(0, 10);
+/** UTC day of a block timestamp, or undefined when it cannot form a date (handlers must never throw). */
+export const dayOf = (unixSeconds: number): string | undefined => {
+  const d = new Date(unixSeconds * 1000);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+};
 
 export const namespaceId = (owner: string, nsId: string) => `${lc(owner)}-${lc(nsId)}`;
 export const grantId = (owner: string, nsId: string, agentId: bigint) => `${namespaceId(owner, nsId)}-${agentId}`;
@@ -61,8 +65,12 @@ export function withKeysCurrent(agent: Agent): Agent {
 type DayDelta = Partial<Pick<DailyStat, "entries" | "grantsSet" | "revokes">>;
 
 /** Adds to the UTC day's counters and counts `owner` as active once per day. */
-export async function touchDay(context: Ctx, owner: string, unixSeconds: number, delta: DayDelta): Promise<void> {
+export async function touchDay(context: Ctx, event: Meta, owner: string, unixSeconds: number, delta: DayDelta): Promise<void> {
   const day = dayOf(unixSeconds);
+  if (day === undefined) {
+    recordError(context, event, "BadTimestamp", String(unixSeconds));
+    return;
+  }
   const stat = (await context.DailyStat.get(day)) ?? { id: day, entries: 0, grantsSet: 0, revokes: 0, activeOwners: 0 };
   const ownerDayId = `${lc(owner)}-${day}`;
   const seen = await context.OwnerDay.get(ownerDayId);
