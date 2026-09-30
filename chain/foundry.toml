@@ -1,0 +1,22 @@
+[profile.default]
+src = "src"
+script = "script"
+# Golden tests are frozen ground truth and live under tests/golden (AGENTS.md rule 3).
+test = "../tests/golden/registry"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.30"
+evm_version = "prague"   # Monad supports all opcodes through Fusaka
+optimizer = true
+optimizer_runs = 10000
+allow_paths = ["../tests"]
+remappings = [
+  "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+  "forge-std/=lib/forge-std/src/",
+  "engram/=src/",
+]
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
+
+[rpc_endpoints]
+monad_testnet = "https://testnet-rpc.monad.xyz"
+monad_mainnet = "https://rpc.monad.xyz"
