@@ -20,6 +20,7 @@ contract MemoryRegistry is EIP712 {
     uint256 public constant MAX_CIPHERTEXT = 2077; // 1 + 12 + 2048 + 16
     uint256 public constant MIN_WRAP = 94; // 1 + 32 eph + 12 nonce + 32 key + 1 label byte + 16 tag
     uint256 public constant MAX_WRAP = 125; // label up to 32 bytes
+    uint256 private constant OWNER_OF_GAS = 100_000; // cap for the identity registry lookup
 
     bytes32 public constant OWNER_CALL_TYPEHASH =
         keccak256("OwnerCall(address owner,bytes32 dataHash,uint256 nonce,uint256 deadline)");
@@ -43,12 +44,16 @@ contract MemoryRegistry is EIP712 {
     struct AgentKeys {
         bytes32 x25519Pub;
         address operator;
+        address setBy; // token holder at the time keys were set; keys are current only while it still holds the token
     }
 
     mapping(address owner => mapping(bytes32 nsId => Namespace)) private _namespaces;
     mapping(address owner => mapping(bytes32 nsId => mapping(uint256 agentId => Grant))) private _grants;
     mapping(uint256 agentId => AgentKeys) private _agentKeys;
     mapping(address owner => uint256) public nonces;
+
+    /// @dev Owner being relayed for, visible only to the relay's self-call (EIP-1153 transient storage).
+    address private transient _relayActor;
 
     // ---------------------------------------------------------------- events
 
@@ -102,7 +107,7 @@ contract MemoryRegistry is EIP712 {
     function setAgentKeys(uint256 agentId, bytes32 x25519Pub, address operator) external {
         if (identityRegistry.ownerOf(agentId) != msg.sender) revert NotAgentOwner();
         if (x25519Pub == bytes32(0) || operator == address(0)) revert BadAgentKeys();
-        _agentKeys[agentId] = AgentKeys(x25519Pub, operator);
+        _agentKeys[agentId] = AgentKeys(x25519Pub, operator, msg.sender);
         emit AgentKeysSet(agentId, x25519Pub, operator);
     }
 
@@ -133,7 +138,7 @@ contract MemoryRegistry is EIP712 {
         Namespace storage ns = _requireNamespace(owner, nsId);
         if (scope != READ && scope != READ_WRITE) revert BadScope();
         if (expiry <= block.timestamp || expiry > block.timestamp + MAX_EXPIRY) revert BadExpiry();
-        if (_agentKeys[agentId].x25519Pub == bytes32(0)) revert AgentKeysMissing();
+        if (!_keysCurrent(agentId)) revert AgentKeysMissing();
 
         uint256 n = epochs.length;
         if (n == 0 || n != wraps.length || epochs[n - 1] != ns.epoch) revert BadEpochs();
@@ -182,11 +187,19 @@ contract MemoryRegistry is EIP712 {
         external
     {
         Namespace storage ns = _requireNamespace(owner, nsId);
-        if (_agentKeys[agentId].operator != msg.sender) revert NotAuthorized();
+        if (_agentKeys[agentId].operator != msg.sender || !_keysCurrent(agentId)) revert NotAuthorized();
         Grant storage g = _grants[owner][nsId][agentId];
         if (g.scope != READ_WRITE) revert NotAuthorized();
         if (g.expiry <= block.timestamp) revert GrantExpired();
         _append(owner, nsId, ns, epoch, ciphertext, false, agentId);
+    }
+
+    // ---------------------------------------------------------------- nonce control
+
+    /// @notice Invalidate any signed-but-unsubmitted relay call. Direct: consumes msg.sender's next nonce.
+    /// Relayed: the relay already consumed the signed nonce, so the call itself is a no-op.
+    function useNonce() external {
+        if (msg.sender != address(this)) nonces[msg.sender]++;
     }
 
     // ---------------------------------------------------------------- gasless relay
@@ -203,8 +216,10 @@ contract MemoryRegistry is EIP712 {
         if (err != ECDSA.RecoverError.NoError || signer != owner) revert BadSignature();
         nonces[owner] = nonce + 1;
 
-        // ERC-2771 style self-call: the owner address rides at the end of calldata, read back by _actor().
-        (bool ok, bytes memory ret) = address(this).call(abi.encodePacked(data, owner));
+        // The self-call executes exactly the signed bytes; the owner travels in transient storage.
+        _relayActor = owner;
+        (bool ok, bytes memory ret) = address(this).call(data);
+        _relayActor = address(0);
         if (!ok) {
             assembly ("memory-safe") {
                 revert(add(ret, 32), mload(ret))
@@ -238,23 +253,51 @@ contract MemoryRegistry is EIP712 {
         return (k.x25519Pub, k.operator);
     }
 
+    /// @notice True when the agent's keys were set by the current ERC-8004 token holder.
+    function hasCurrentKeys(uint256 agentId) external view returns (bool) {
+        return _keysCurrent(agentId);
+    }
+
     function domainSeparator() external view returns (bytes32) {
         return _domainSeparatorV4();
     }
 
     // ---------------------------------------------------------------- internals
 
-    /// @dev The acting owner: msg.sender, or the signer appended by relay() on a self-call.
+    /// @dev The acting owner: msg.sender, or the verified signer during relay()'s self-call.
     function _actor() private view returns (address) {
-        if (msg.sender == address(this) && msg.data.length >= 24) {
-            return address(bytes20(msg.data[msg.data.length - 20:]));
+        if (msg.sender == address(this)) {
+            address relayed = _relayActor;
+            if (relayed != address(0)) return relayed;
         }
         return msg.sender;
     }
 
+    /// @dev Keys count only while the address that set them still holds the ERC-8004 token. A reverting,
+    /// burned, gas-exhausting, or malformed `ownerOf` (short returndata, dirty upper bits) means "not current".
+    /// Raw staticcall copies at most 32 bytes back, so returndata size cannot be used to grief.
+    function _keysCurrent(uint256 agentId) private view returns (bool) {
+        AgentKeys storage k = _agentKeys[agentId];
+        if (k.x25519Pub == bytes32(0)) return false;
+        address identity = address(identityRegistry);
+        bytes4 sel = IERC721.ownerOf.selector;
+        bool ok;
+        uint256 word;
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            mstore(ptr, sel)
+            mstore(add(ptr, 4), agentId)
+            ok := staticcall(OWNER_OF_GAS, identity, ptr, 0x24, ptr, 0x20)
+            if lt(returndatasize(), 0x20) { ok := 0 }
+            word := mload(ptr)
+        }
+        if (!ok || word >> 160 != 0) return false;
+        return address(uint160(word)) == k.setBy;
+    }
+
     function _relayable(bytes4 sel) private pure returns (bool) {
         return sel == this.createNamespace.selector || sel == this.appendAsOwner.selector || sel == this.grant.selector
-            || sel == this.revoke.selector || sel == this.rotate.selector;
+            || sel == this.revoke.selector || sel == this.rotate.selector || sel == this.useNonce.selector;
     }
 
     function _requireNamespace(address owner, bytes32 nsId) private view returns (Namespace storage ns) {
@@ -303,11 +346,11 @@ contract MemoryRegistry is EIP712 {
         uint256[] calldata keepIds,
         bytes[] calldata keepWraps
     ) private {
-        // An expired grantee must never receive a new epoch key.
+        // An expired grantee, or one whose agent keys are no longer current, must never receive a new epoch key.
         uint256[] storage list = ns.grantees;
         for (uint256 i = 0; i < list.length;) {
             uint256 id = list[i];
-            if (_grants[owner][nsId][id].expiry <= block.timestamp) {
+            if (_grants[owner][nsId][id].expiry <= block.timestamp || !_keysCurrent(id)) {
                 _removeGrantee(owner, nsId, ns, id); // swaps the last element into slot i
             } else {
                 i++;
