@@ -82,3 +82,24 @@ resolved -- it's just hidden until the next rewrite.
 - **Stage/module:** indexer (handlers/MemoryRegistry.ts)
 - **Regression case added:** `tests/golden/indexer/indexer.regressions.golden.test.ts` -- cases 18-23
 - **Status:** fixed
+
+## 2026-10-01 -- V-UI1: "Unlock and approve" in the consent popup unlocked but never granted
+- **Symptom:** in the connect popup, clicking "Unlock and approve" completed the passkey ceremony, then returned to the review screen without granting (found by the browser e2e test).
+- **Root cause:** `approve()` called `signIn()` and then `run()`, but `run` was a closure over the React `session` state captured before sign-in (null), so it returned immediately.
+- **Stage/module:** vault (components/SessionProvider.tsx)
+- **Regression case added:** `tests/e2e/vault.e2e.spec.ts` step 3 (consent grant straight after unlock). UI flow, so the regression lives in the e2e suite rather than tests/golden.
+- **Status:** fixed
+
+## 2026-10-01 -- V-UI2: a new memory could stay invisible after saving
+- **Symptom:** after "Remember" succeeded (both relayed txs confirmed), the memory list stayed empty until a manual refresh (found while scripting screenshots; the first e2e run passed by timing luck).
+- **Root cause:** the vault re-read immediately; the indexer trails the chain by up to ~1 s, so recall returned `complete: false` with no entries. `discoverLabels` then dropped the well-known namespace (no readable entries), so the "wait until every namespace is complete" check passed vacuously.
+- **Stage/module:** vault (components/Dashboard.tsx), indexer lag at the SDK source boundary
+- **Regression case added:** `tests/e2e/vault.e2e.spec.ts` step 1 waits for the saved card without reloading; the vault now re-reads until the SDK reports every namespace complete (`untilSettled`), and discovery keeps incomplete namespaces; golden V1 re-run.
+- **Status:** fixed
+
+## 2026-10-01 -- V-RPC1: vault access panel failed intermittently under public RPC rate limits
+- **Symptom:** "Who can read it" showed "Something went wrong" in 2 of 3 e2e runs; the SDK logged `grants` UNEXPECTED `ContractFunctionExecutionError` after ~160 ms.
+- **Root cause:** discovery plus `grants()` fire many parallel `eth_call`s; Monad's public RPC throttles bursts and viem surfaces the transport failure as `ContractFunctionExecutionError`.
+- **Stage/module:** sdk (config.ts client setup) at the chain boundary
+- **Regression case added:** `tests/e2e/vault.e2e.spec.ts` (run 3x after the fix). Reads on known Monad chains are now batched through Multicall3 with retry + backoff; unexpected SDK errors now log their class name.
+- **Status:** fixed

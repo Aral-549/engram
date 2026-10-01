@@ -29,7 +29,9 @@ export async function traced<T>(
     return out;
   } catch (e) {
     const code = e instanceof EngramError ? e.code : "UNEXPECTED";
-    logger({ stage: "sdk", side, op, traceId: id, ok: false, code, durationMs: Date.now() - t0, ...jsonSafe(fields), ...jsonSafe(extra) });
+    // Class name only for unexpected errors: messages from libraries can embed call arguments.
+    const errorClass = e instanceof EngramError ? undefined : (e as { name?: string })?.name ?? typeof e;
+    logger({ stage: "sdk", side, op, traceId: id, ok: false, code, errorClass, durationMs: Date.now() - t0, ...jsonSafe(fields), ...jsonSafe(extra) });
     throw e;
   }
 }

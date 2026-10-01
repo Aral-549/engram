@@ -29,3 +29,7 @@ chain/broadcast/**/dry-run/
 indexer/.envio/
 indexer/envio-env.d.ts
 indexer/generated/
+test-results/
+playwright-report/
+apps/*/.next/
+apps/*/next-env.d.ts

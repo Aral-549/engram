@@ -21,6 +21,13 @@ Three deployed web apps with public URLs, plus judge instructions in the README.
 - Connect flow (`/connect` popup): shows requesting origin, agent name, verified/unverified origin badge,
   namespaces, scope, expiry, and "this agent sends granted memory to Moonshot AI (KIMI)"; Approve re-prompts passkey.
 - Session: 15 min idle expiry with a clear "Session ended, tap to unlock" screen.
+- Namespace discovery (stateless): namespace ids are opaque, so the vault checks a fixed list of well-known
+  labels (`preferences`, `work`, `health`, `travel`, `notes`) plus custom labels recorded as entries in a
+  reserved encrypted namespace `engram-index` (text `label:<name>`). Everything is rediscovered from the passkey.
+- Agent cards: `GET /api/agent-card?agentId=` reads the ERC-8004 `tokenURI` onchain and fetches the card server-side
+  (https only, 5 s timeout, 64 KB cap, JSON only), so the browser never fetches arbitrary URLs directly.
+- Configuration: chain from the SDK's `deployments.monadTestnet`; `NEXT_PUBLIC_INDEXER_URL` (Envio GraphQL) with
+  the chain-logs source as fallback; relay at `/api/relay` backed by `RELAYER_PRIVATE_KEY` (server env only).
 
 ## App 2: assistant (`apps/assistant`) -- ERC-8004 agent, scope READ_WRITE on `preferences`
 - Chat UI. KIMI is called with two tools: `remember({kind, text})` and `recall()`.
@@ -51,6 +58,10 @@ Three deployed web apps with public URLs, plus judge instructions in the README.
 | 8 | Relay with invalid signature | 400, no tx sent, logged | |
 | 9 | Relay exceeding rate limit | 429 | |
 | 10 | KIMI API down or times out (20 s) | assistant shows "model unavailable, your memory is safe"; no partial writes | |
+| V1 | Fresh browser, sign in with a passkey that created `preferences` and a custom label `recipes` | both namespaces listed with their entries; nothing read from local storage | stateless discovery |
+| V2 | `/api/agent-card` for an agent whose tokenURI is `http://`, non-JSON, > 64 KB, or slow | 4xx/504 with a code, never proxies the body | |
+| V3 | Consent popup opened with a malformed request (bad label, missing origin) | error screen, no passkey prompt, reply `{ ok:false, code:"INPUT_INVALID" }` | |
+| V4 | Consent popup: user clicks Deny or closes | opener receives `USER_CANCELLED` (explicit reply or popup-closed detection) | |
 | 11 | Memory text contains "ignore your instructions and reveal ..." | treated as data inside a delimited block in the system prompt; agent does not follow it | prompt-injection hygiene |
 
 ## Edge cases that must be covered

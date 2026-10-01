@@ -10,12 +10,14 @@
   "scripts": {
     "test": "npm run test --workspaces --if-present",
     "test:chain": "cd chain && forge test",
-    "golden:crypto": "uv run --with cryptography==45.0.7 --with pycryptodome==3.23.0 tests/golden/crypto/generate_vectors.py"
+    "golden:crypto": "uv run --with cryptography==45.0.7 --with pycryptodome==3.23.0 tests/golden/crypto/generate_vectors.py",
+    "test:e2e": "playwright test -c tests/e2e/playwright.config.ts"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "tsx": "^4.23.15",
     "viem": "^2.57.1"
   }
