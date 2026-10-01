@@ -152,3 +152,31 @@ resolved -- it's just hidden until the next rewrite.
 - **Stage/module:** sdk (agent.ts, relay.ts, sources.ts, connect.ts, owner.ts)
 - **Regression case added:** `tests/golden/sdk/sdk.regressions.golden.test.ts` -- cases 36-41
 - **Status:** fixed
+
+## 2026-10-01 -- V-UI3: agent app page crashed after the first chat message
+- **Symptom:** after sending a message, Sage and Wayfarer showed "This page couldn't load" (found by the agent-app browser e2e); the server had already saved the memories.
+- **Root cause:** `useEffect(() => el?.scrollIntoView(...))` returned the call's value; current Chromium returns a Promise from `scrollIntoView`, which React treated as a cleanup function ("destroy is not a function").
+- **Stage/module:** agent app (apps/agent/app/page.tsx)
+- **Regression case added:** `tests/e2e/agents.e2e.spec.ts` (chat after connect). UI flow, so the regression lives in the e2e suite.
+- **Status:** fixed
+
+## 2026-10-01 -- V-UI4: an agent could miss memories saved seconds earlier
+- **Symptom:** right after Sage saved two facts, "What do you know about me?" answered without them (found by the agent-app browser e2e).
+- **Root cause:** the agent read through the indexer while it trailed the chain; recall correctly reported `complete: false`, but agent-kit used the partial result.
+- **Stage/module:** agent-kit (readMemory) at the SDK source boundary
+- **Regression case added:** `tests/golden/agent-kit/agent-kit.lag.golden.test.ts` -- case A10
+- **Status:** fixed
+
+## 2026-10-01 -- G1: login CSRF on the agent apps' /api/session (high)
+- **Symptom:** a cross-site `text/plain` form POST could set the victim's session cookie to an attacker's proof, so Sage would save the victim's statements into the attacker's namespace.
+- **Root cause:** no Origin or content-type check; `req.json()` parses text bodies; cookie was SameSite=Lax; body cap relied on content-length.
+- **Stage/module:** agent app routes (apps/agent/app/api/*)
+- **Regression case added:** `tests/golden/agent-kit/agent-kit.regressions.golden.test.ts` -- A17 (request guard)
+- **Status:** fixed
+
+## 2026-10-01 -- G2..G8: agent server budget, access, and robustness gaps
+- **Symptom:** (G2) one model message caused 12 onchain writes, 15 recalls/round caused 46 source reads; (G3) recall tool results reached the model outside `<user_memory>`; (G4) any self-signed identity with no grant could chat on the KIMI key, no rate limit; (G5) each chat scanned every owner's grants; (G6) a source outage threw a raw 500 and saves made before a model failure were not shown; (G7) `tool_calls: [null]` crashed the turn and 500-emoji text passed validation but could not be stored; (G8) cookies carried arbitrary proof padding (133 KB) and a non-exact APP_ORIGIN silently rejected every session.
+- **Root cause:** missing caps, access precondition, scoped lookup, error contract, and input normalization.
+- **Stage/module:** agent-kit (packages/agent-kit/src/index.ts), agent app client
+- **Regression case added:** `tests/golden/agent-kit/agent-kit.regressions.golden.test.ts` -- A11-A16
+- **Status:** fixed

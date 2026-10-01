@@ -40,7 +40,8 @@ export class FakeKimi {
             : {
                 role: "assistant",
                 content: null,
-                tool_calls: next.toolCalls.map((t, i) => ({
+                // Malformed entries (e.g. null) pass through untouched so the agent server must cope with them.
+                tool_calls: next.toolCalls.map((t, i) => !t || typeof t !== "object" ? t : ({
                   id: `call_${this.requests.length}_${i}`,
                   type: "function",
                   function: { name: t.name, arguments: typeof t.args === "string" ? t.args : JSON.stringify(t.args) },

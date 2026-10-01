@@ -27,7 +27,10 @@ export default function Page() {
       /* storage blocked: start disconnected */
     }
   }, []);
-  useEffect(() => end.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
+  // Block body on purpose: newer Chromium returns a Promise from scrollIntoView, and React must not get it as cleanup.
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   function setFlag(v: boolean) {
     setConnected(v);
@@ -63,9 +66,10 @@ export default function Page() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
+        // The server only keeps the last 20 turns; never send more than that (long chats would hit the body cap).
+        body: JSON.stringify({ messages: next.slice(-20).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })) }),
       });
-      const body = (await res.json()) as { reply?: string; saved?: { text: string; txHash: string }[]; accessRevoked?: boolean; message?: string };
+      const body = ((await res.json().catch(() => ({}))) ?? {}) as { reply?: string; saved?: { text: string; txHash: string }[]; accessRevoked?: boolean; message?: string; code?: string };
       if (res.status === 401) {
         setFlag(false);
         setNotice("Connect your memory first.");
@@ -73,11 +77,15 @@ export default function Page() {
         return;
       }
       if (!res.ok) {
-        setNotice(body.message ?? "Something went wrong.");
+        setNotice(body.code === "NO_GRANT" ? "Approve this agent in your vault first." : (body.message ?? "Something went wrong."));
+        // Memories saved before a failure are real; show them (BUGLOG G6).
+        if (body.saved?.length) setMessages([...next, { role: "assistant", content: "", saved: body.saved }]);
         return;
       }
       setRevoked(!!body.accessRevoked);
       setMessages([...next, { role: "assistant", content: body.reply ?? "", saved: body.saved }]);
+    } catch {
+      setNotice("Could not reach the agent. Check your connection and try again.");
     } finally {
       setBusy(false);
     }

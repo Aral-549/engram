@@ -24,7 +24,7 @@ function claimedOrigin(): string | null {
 }
 
 function Consent() {
-  const { session, status, signIn, run, error } = useSession();
+  const { session, status, signIn, signUp, run, error } = useSession();
   const [req, setReq] = useState<ConnectRequest | null>(null);
   const [card, setCard] = useState<AgentCard | null>(null);
   const [bad, setBad] = useState<string | null>(null);
@@ -55,11 +55,19 @@ function Consent() {
     });
   }, []);
 
-  async function approve() {
+  // New users arriving from an app can create their vault right here; the grant follows within the
+  // 60 s window, so it is still one passkey prompt.
+  async function approve(how: "existing" | "new" = "existing") {
     if (!req) return;
-    const s = session ?? (await signIn());
+    const s = session ?? (await (how === "new" ? signUp() : signIn()));
     if (!s) return;
     setPhase("granting");
+    // Sign the app-session proof first (prompt-free, in-session): if it fails, nothing has been granted yet.
+    const sessionProof = await run((x) => x.signAppSession({ agentId: req.agentId, origin: req.origin, ttlSec: Math.min(req.expiresInSec, 30 * 86400) }));
+    if (!sessionProof) {
+      setPhase("review");
+      return;
+    }
     let txHash: `0x${string}` | undefined;
     for (const label of req.labels) {
       if (!(KNOWN_LABELS as readonly string[]).includes(label)) await run((x) => addLabel(x, label));
@@ -69,12 +77,6 @@ function Consent() {
         return;
       }
       txHash = r.txHash;
-    }
-    // Identity for the app's server (verifyAppSession). Signed in-session: no extra passkey prompt.
-    const sessionProof = await run((x) => x.signAppSession({ agentId: req.agentId, origin: req.origin, ttlSec: Math.min(req.expiresInSec, 30 * 86400) }));
-    if (!sessionProof) {
-      setPhase("review");
-      return;
     }
     reply({ ok: true, owner: s.owner, granted: req.labels, txHash: txHash!, sessionProof });
     setPhase("done");
@@ -139,10 +141,15 @@ function Consent() {
           </p>
 
           <div className="mt-6 flex flex-col gap-2">
-            <button className="btn btn-primary justify-center px-5 py-3" onClick={() => void approve()} disabled={phase === "granting" || status === "working"}>
+            <button className="btn btn-primary justify-center px-5 py-3" onClick={() => void approve("existing")} disabled={phase === "granting" || status === "working"}>
               <Seal size={18} />
               {phase === "granting" ? "Sealing access onchain…" : status === "working" ? "Waiting for your passkey…" : session ? "Approve with passkey" : "Unlock and approve"}
             </button>
+            {!session ? (
+              <button className="btn btn-ghost justify-center px-5 py-2.5" onClick={() => void approve("new")} disabled={phase === "granting" || status === "working"}>
+                New here? Create a vault and approve
+              </button>
+            ) : null}
             <button className="btn btn-ghost justify-center px-5 py-2.5" onClick={deny} disabled={phase === "granting"}>
               Deny
             </button>

@@ -1,7 +1,7 @@
 import { EngramError } from "./errors.js";
 
 /** One structured line per SDK stage boundary (AGENTS.md rule 5). Never contains plaintext, keys, or wraps. */
-export type LogLine = { stage: "sdk"; side: "owner" | "client" | "agent" | "relay"; op: string; traceId: string; ok: boolean; [k: string]: unknown };
+export type LogLine = { stage: "sdk" | "agent"; side: "owner" | "client" | "agent" | "relay"; op: string; traceId: string; ok: boolean; [k: string]: unknown };
 export type Logger = (line: LogLine) => void;
 
 export const defaultLogger: Logger = (line) => console.debug(JSON.stringify(line));
