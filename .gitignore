@@ -33,3 +33,4 @@ test-results/
 playwright-report/
 apps/*/.next/
 apps/*/next-env.d.ts
+*.tsbuildinfo
