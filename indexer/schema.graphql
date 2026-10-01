@@ -54,6 +54,9 @@ type WrappedKey {
   generation: Int!
   epoch: BigInt!
   wrap: String!
+  "Transaction and log index of the KeyWrapped event, so agents can verify the wrap in the receipt."
+  txHash: String!
+  logIndex: Int!
 }
 
 type Agent {

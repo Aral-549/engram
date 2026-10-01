@@ -27,7 +27,7 @@ All hex values lowercase. Ids are deterministic so reorg replays never duplicate
 | `Namespace` | `owner-nsId` | `owner`, `nsId`, `epoch`, `nextSeq`, `granteeCount`, `createdAt` |
 | `Entry` | `owner-nsId-seq` | `namespace`, `seq`, `epoch`, `byOwner`, `agentId`, `ciphertext`, `txHash`, `blockNumber`, `blockTime` |
 | `Grant` | `owner-nsId-agentId` | `namespace`, `owner`, `agent`, `scope`, `expiry`, `active`, `generation`, `grantedAt`, `revokedAt` |
-| `WrappedKey` | `owner-nsId-agentId-epoch` | `grant`, `generation`, `epoch`, `wrap` |
+| `WrappedKey` | `owner-nsId-agentId-epoch` | `grant`, `generation`, `epoch`, `wrap`, `txHash`, `logIndex` (lets agents verify the wrap in the receipt; sdk.md trust boundaries) |
 | `Agent` | agentId (decimal) | `tokenOwner`, `agentURI`, `x25519Pub`, `operator`, `keysSetBy`, `keysCurrent`, `activeGrantCount`, `entriesWritten`, `registeredAt` |
 | `DailyStat` | `yyyy-mm-dd` (UTC of block time) | `entries`, `grantsSet`, `revokes`, `activeOwners` |
 | `OwnerDay` | `owner-yyyy-mm-dd` | marker used to count `activeOwners` once per owner per day |
@@ -71,6 +71,7 @@ processed (the contract only accepts `setAgentKeys` from the holder).
 | 21 | `KeyWrapped` with no Grant row | IndexerError, no WrappedKey row | no dangling refs |
 | 22 | revoke that would drive a counter below zero | IndexerError recorded (counter stays 0) | no silent clamping |
 | 23 | Grant rows carry `owner` | grants for an owner are queryable by `owner` directly | |
+| 24 | `KeyWrapped` at tx T, log index L | WrappedKey.txHash = T, logIndex = L | chain-verifiable wraps |
 
 ## Queries the SDK depends on (stable API)
 - entries for `(owner, nsId)` with `seq >= since`, ordered by seq, page size 500

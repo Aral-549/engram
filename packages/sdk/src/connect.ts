@@ -4,6 +4,9 @@ import { EngramError, fail } from "./errors.js";
 import type { GrantScope } from "./owner.js";
 
 const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const TX_RE = /^0x[0-9a-fA-F]{64}$/;
+const UINT256_MAX = 2n ** 256n - 1n;
 const MAX_EXPIRY_SEC = 365 * 86400;
 export const CONNECT_MESSAGE_TYPE = "engram:connect:result";
 
@@ -54,9 +57,16 @@ export function connectEngram(opts: {
   window?: WindowLike;
   pollMs?: number;
 }): Promise<ConnectResult> {
-  validate(opts.labels, opts.scope, opts.expiresInSec);
+  // Invalid input rejects the returned promise; callers never need a sync try/catch (BUGLOG S7).
+  let vaultOrigin: string;
+  try {
+    validate(opts.labels, opts.scope, opts.expiresInSec);
+    if (typeof opts.agentId !== "bigint" || opts.agentId < 0n || opts.agentId > UINT256_MAX) fail("INPUT_INVALID", "agentId must be in 0..2^256-1");
+    vaultOrigin = originOf(opts.vaultUrl) ?? fail("INPUT_INVALID", "vaultUrl must be an http(s) URL");
+  } catch (e) {
+    return Promise.reject(e);
+  }
   const w = opts.window ?? (globalThis as unknown as { window: WindowLike }).window;
-  const vaultOrigin = originOf(opts.vaultUrl) ?? fail("INPUT_INVALID", "vaultUrl must be an http(s) URL");
   const params = new URLSearchParams({
     v: "1", agentId: opts.agentId.toString(), labels: opts.labels.join(","), scope: opts.scope, expiresInSec: String(opts.expiresInSec),
   });
@@ -67,13 +77,19 @@ export function connectEngram(opts: {
   return new Promise<ConnectResult>((resolve, reject) => {
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== vaultOrigin || e.source !== popup) return;
-      const d = e.data as Partial<ConnectMessage> & { type?: string; v?: number };
-      if (!d || d.type !== CONNECT_MESSAGE_TYPE || d.v !== 1 || typeof d.ok !== "boolean") return;
+      const d = e.data as Record<string, unknown> | null;
+      if (!d || typeof d !== "object" || d.type !== CONNECT_MESSAGE_TYPE || d.v !== 1) return;
+      // Malformed replies are ignored exactly like foreign ones (BUGLOG S7).
+      const okShape =
+        d.ok === true && typeof d.owner === "string" && ADDRESS_RE.test(d.owner) && typeof d.txHash === "string" && TX_RE.test(d.txHash) &&
+        Array.isArray(d.granted) && d.granted.every((l) => typeof l === "string" && LABEL_RE.test(l));
+      const failShape = d.ok === false && typeof d.code === "string" && d.code.length <= 64;
+      if (!okShape && !failShape) return;
       cleanup();
-      if (d.ok && typeof d.owner === "string" && Array.isArray(d.granted) && typeof d.txHash === "string") {
-        resolve({ owner: d.owner as Hex, granted: d.granted, txHash: d.txHash as Hex });
+      if (okShape) {
+        resolve({ owner: d.owner as Hex, granted: d.granted as string[], txHash: d.txHash as Hex });
       } else {
-        reject(new EngramError(d.ok === false && d.code === "USER_CANCELLED" ? "USER_CANCELLED" : "RELAY_REJECTED", "the vault did not grant access", { detail: d.ok === false ? d.code : undefined }));
+        reject(new EngramError(d.code === "USER_CANCELLED" ? "USER_CANCELLED" : "RELAY_REJECTED", "the vault did not grant access", { detail: d.code as string }));
       }
     };
     const timer = setInterval(() => {
@@ -96,15 +112,21 @@ export function parseConnectRequest(url: string, opts: { agentCard?: AgentCard }
   const p = u.searchParams;
   if (p.get("v") !== "1") fail("INPUT_INVALID", "unsupported connect request version");
   const agentIdRaw = p.get("agentId") ?? "";
-  if (!/^\d{1,78}$/.test(agentIdRaw)) fail("INPUT_INVALID", "agentId must be a decimal integer");
-  const labels = (p.get("labels") ?? "").split(",").filter(Boolean);
+  // Canonical decimal only: no leading zeros, exponents, hex, or signs (the consent screen shows these numbers).
+  const CANON = /^(0|[1-9]\d{0,77})$/;
+  if (!CANON.test(agentIdRaw) || BigInt(agentIdRaw) > UINT256_MAX) fail("INPUT_INVALID", "agentId must be a canonical decimal integer in 0..2^256-1");
+  const labels = (p.get("labels") ?? "").split(",");
+  if (new Set(labels).size !== labels.length) fail("INPUT_INVALID", "labels must not repeat");
   const scope = p.get("scope") as GrantScope;
-  const expiresInSec = Number(p.get("expiresInSec"));
+  const expRaw = p.get("expiresInSec") ?? "";
+  if (!CANON.test(expRaw)) fail("INPUT_INVALID", "expiresInSec must be a canonical decimal integer");
+  const expiresInSec = Number(expRaw);
   validate(labels, scope, expiresInSec);
   const claimed = p.get("origin") ?? "";
   const origin = originOf(claimed);
   if (!origin || origin !== claimed) fail("INPUT_INVALID", "origin must be an exact http(s) origin");
-  const originVerified = (opts.agentCard?.endpoints ?? []).some((e) => originOf(e.endpoint) === origin);
+  const endpoints: unknown = opts.agentCard?.endpoints;
+  const originVerified = Array.isArray(endpoints) && endpoints.some((e) => !!e && typeof e === "object" && typeof (e as { endpoint?: unknown }).endpoint === "string" && originOf((e as { endpoint: string }).endpoint) === origin);
   return { agentId: BigInt(agentIdRaw), labels, scope, expiresInSec, origin: origin!, originVerified };
 }
 

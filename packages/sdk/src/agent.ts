@@ -14,9 +14,10 @@ import { decodeEventLog, hexToBytes, toHex, type Account, type Chain, type Hex, 
 import { memoryRegistryAbi } from "./abi.js";
 import { chainReads } from "./chain.js";
 import { clientsFor, loggerOf, type EngramConfig } from "./config.js";
-import { EngramError, fail } from "./errors.js";
+import { EngramError, crypto, fail } from "./errors.js";
 import { traced } from "./log.js";
-import { dedupe, missing, type GrantScope, type RecalledEntry } from "./owner.js";
+import { assertAgentId, dedupe, missing, type GrantScope, type RecalledEntry } from "./owner.js";
+import type { SourceWrap } from "./sources.js";
 
 type Wallet = WalletClient<Transport, Chain | undefined, Account>;
 
@@ -42,11 +43,24 @@ export function isCanonicalX25519(pub: Uint8Array): boolean {
 
 export class EngramAgent {
   readonly agentId: bigint;
-  private readonly priv: Uint8Array;
+  // ES private fields: invisible to JSON.stringify and util.inspect (BUGLOG S5).
+  readonly #priv: Uint8Array;
+  readonly #config: EngramConfig;
+  readonly #operator: Wallet;
 
-  constructor(private readonly opts: { config: EngramConfig; agentId: bigint; x25519PrivateKey: Uint8Array; operator: Wallet }) {
+  constructor(opts: { config: EngramConfig; agentId: bigint; x25519PrivateKey: Uint8Array; operator: Wallet }) {
     this.agentId = BigInt(opts.agentId);
-    this.priv = new Uint8Array(opts.x25519PrivateKey);
+    assertAgentId(this.agentId);
+    this.#priv = new Uint8Array(opts.x25519PrivateKey);
+    this.#config = opts.config;
+    this.#operator = opts.operator;
+  }
+
+  toJSON() {
+    return { agentId: this.agentId.toString(), operator: this.#operator.account.address };
+  }
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `EngramAgent { agentId: ${this.agentId}, operator: '${this.#operator.account.address}' }`;
   }
 
   /** Publishes the agent's X25519 key and operator (`setAgentKeys`). Must be sent by the ERC-8004 token holder. */
@@ -66,7 +80,7 @@ export class EngramAgent {
   }
 
   private get config() {
-    return this.opts.config;
+    return this.#config;
   }
   private get log() {
     return loggerOf(this.config);
@@ -78,14 +92,45 @@ export class EngramAgent {
     return { chainId: BigInt(this.config.chainId), registry: this.config.registry, owner };
   }
 
-  /** Opens every current-generation wrap it can; logs KEY_MISMATCH for wraps its key cannot open. */
+  /**
+   * A wrap is trusted only if the registry emitted it: the receipt at `txHash` must hold, at `logIndex`, a
+   * KeyWrapped log from the registry with exactly this owner, nsId, agentId, epoch, and wrap (BUGLOG S1).
+   */
+  private async verifiedOnChain(owner: Hex, nsId: Hex, w: SourceWrap, receipts: Map<string, Promise<unknown>>): Promise<boolean> {
+    if (!w.txHash || typeof w.logIndex !== "number") return false;
+    const key = w.txHash.toLowerCase();
+    if (!receipts.has(key)) {
+      receipts.set(key, clientsFor(this.config).publicClient.getTransactionReceipt({ hash: w.txHash }).catch(() => undefined));
+    }
+    const receipt = (await receipts.get(key)) as { status: string; logs: { address: Hex; data: Hex; topics: Hex[]; logIndex: number }[] } | undefined;
+    if (!receipt || receipt.status !== "success") return false;
+    const log = receipt.logs.find((l) => l.logIndex === w.logIndex);
+    if (!log || log.address.toLowerCase() !== this.config.registry.toLowerCase()) return false;
+    try {
+      const ev = decodeEventLog({ abi: memoryRegistryAbi, data: log.data, topics: log.topics as never });
+      const a = ev.args as { owner: Hex; nsId: Hex; agentId: bigint; epoch: bigint; wrap: Hex };
+      return (
+        ev.eventName === "KeyWrapped" && a.owner.toLowerCase() === owner.toLowerCase() && a.nsId.toLowerCase() === nsId.toLowerCase() &&
+        a.agentId === this.agentId && a.epoch === w.epoch && a.wrap.toLowerCase() === w.wrap.toLowerCase()
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Opens every chain-verified current-generation wrap; logs WRAP_UNVERIFIED / KEY_MISMATCH for the rest. */
   private async keysFor(owner: Hex, nsId: Hex, generation: number) {
     const keys = new Map<bigint, Uint8Array>();
+    const receipts = new Map<string, Promise<unknown>>();
     let label: string | undefined;
     for (const w of await this.config.source.wraps({ owner, nsId, agentId: this.agentId })) {
       if (w.generation !== generation) continue;
+      if (!(await this.verifiedOnChain(owner, nsId, w, receipts))) {
+        this.log({ stage: "sdk", side: "agent", op: "unwrap", traceId: "-", ok: false, code: "WRAP_UNVERIFIED", agentId: this.agentId.toString(), epoch: w.epoch.toString() });
+        continue;
+      }
       try {
-        const r = await unwrapNamespaceKey({ ctx: this.ctx(owner), nsId: hexToBytes(nsId), epoch: w.epoch, agentId: this.agentId, envelope: hexToBytes(w.wrap), agentX25519Private: this.priv });
+        const r = await unwrapNamespaceKey({ ctx: this.ctx(owner), nsId: hexToBytes(nsId), epoch: w.epoch, agentId: this.agentId, envelope: hexToBytes(w.wrap), agentX25519Private: this.#priv });
         keys.set(w.epoch, r.nsKey);
         label = r.label;
       } catch (e) {
@@ -154,15 +199,19 @@ export class EngramAgent {
         this.reads.namespace(owner, nsId),
       ]);
       if (!active || onchain.scope !== 3) fail("NOT_AUTHORIZED", "this agent has no active read-write grant for the namespace");
+      const [agentKeys, current] = await Promise.all([this.reads.agentKeys(this.agentId), this.reads.hasCurrentKeys(this.agentId)]);
+      if (!current || agentKeys.operator.toLowerCase() !== this.#operator.account.address.toLowerCase()) {
+        fail("NOT_AUTHORIZED", "this wallet is not the agent's registered operator, or the agent's keys are not current");
+      }
       const grant = await this.currentGrant(owner, nsId);
       const { keys } = await this.keysFor(owner, nsId, grant?.generation ?? 1);
       const key = keys.get(ns.epoch);
       if (!key) fail("NOT_AUTHORIZED", "this agent holds no key for the namespace's current epoch");
-      const plaintext = encodeEntry({ v: 1, t: Date.now(), kind: entry.kind, text: entry.text });
+      const plaintext = crypto(() => encodeEntry({ v: 1, t: Date.now(), kind: entry.kind, text: entry.text }));
       const envelope = await encryptEntry({ key: key!, ctx: this.ctx(owner), nsId: hexToBytes(nsId), epoch: ns.epoch, plaintext });
-      const hash = await this.opts.operator.writeContract({
+      const hash = await this.#operator.writeContract({
         address: this.config.registry, abi: memoryRegistryAbi, functionName: "appendAsAgent",
-        args: [owner, nsId, this.agentId, ns.epoch, toHex(envelope)], chain: this.opts.operator.chain,
+        args: [owner, nsId, this.agentId, ns.epoch, toHex(envelope)], chain: this.#operator.chain,
       });
       const receipt = await clientsFor(this.config).publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== "success") fail("TX_REVERTED", "appendAsAgent reverted");

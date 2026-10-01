@@ -98,7 +98,7 @@ indexer.onEvent({ contract: "MemoryRegistry", event: "GrantSet", fields: TS }, a
   logStage(context, event, { owner, nsId, agentId: agentId.toString(), scope: Number(scope), expiry: expiry.toString(), regrant: wasActive });
 });
 
-indexer.onEvent({ contract: "MemoryRegistry", event: "KeyWrapped" }, async ({ event, context }) => {
+indexer.onEvent({ contract: "MemoryRegistry", event: "KeyWrapped", fields: { transaction: ["hash"] } }, async ({ event, context }) => {
   const { owner, nsId, agentId, epoch, wrap } = event.params;
   const gid = grantId(owner, nsId, agentId);
   const grant = await context.Grant.get(gid);
@@ -106,7 +106,10 @@ indexer.onEvent({ contract: "MemoryRegistry", event: "KeyWrapped" }, async ({ ev
     recordError(context, event, "WrapWithoutGrant", `${gid} epoch ${epoch}`);
     return;
   }
-  context.WrappedKey.set({ id: `${gid}-${epoch}`, grant_id: gid, generation: grant.generation, epoch, wrap: lc(wrap) });
+  context.WrappedKey.set({
+    id: `${gid}-${epoch}`, grant_id: gid, generation: grant.generation, epoch, wrap: lc(wrap),
+    txHash: lc(event.transaction.hash), logIndex: event.logIndex,
+  });
   logStage(context, event, { owner: lc(owner), nsId, agentId: agentId.toString(), epoch: epoch.toString() });
 });
 

@@ -1,4 +1,4 @@
-// Owner side (vault origin only). Spec: contracts/sdk.md "Owner", "Session scoping".
+// Owner side (vault origin only). Spec: contracts/sdk.md "Owner", "Session scoping", "Trust boundaries".
 import {
   createPasskeyWithPrfOutput,
   createSecp256k1SigningSession,
@@ -9,6 +9,7 @@ import {
 } from "@category-labs/mera";
 import { toViemAccount } from "@category-labs/mera/viem";
 import {
+  EngramCryptoError,
   ROOT_SALT,
   decryptEntry,
   deriveAccount,
@@ -22,17 +23,21 @@ import {
   type Entry,
   type EntryKind,
 } from "@engram/crypto";
-import { decodeEventLog, encodeFunctionData, hexToBytes, toHex, type Hex, type LocalAccount } from "viem";
+import { decodeEventLog, decodeFunctionData, encodeFunctionData, hexToBytes, toHex, type Hex, type LocalAccount, type TransactionReceipt } from "viem";
 import { memoryRegistryAbi } from "./abi.js";
 import { chainReads } from "./chain.js";
 import { clientsFor, loggerOf, type EngramConfig } from "./config.js";
 import { EngramError, crypto, cryptoAsync, fail } from "./errors.js";
 import { traced } from "./log.js";
-import { signOwnerCall } from "./relay.js";
+import { signOwnerCall, type RelayRequest } from "./relay.js";
 
 export const SESSION_IDLE_MS = 15 * 60 * 1000;
 export const REAUTH_WINDOW_MS = 60 * 1000;
+/** Grants expiring within this margin of chain time are revoked explicitly on rotation (sdk.md case 34). */
+export const EXPIRY_MARGIN_SEC = 60n;
+export const MAX_GRANTEES = 16;
 const MAX_EXPIRY_SEC = 365 * 86400;
+const UINT256_MAX = 2n ** 256n - 1n;
 
 export type GrantScope = "read" | "readwrite";
 export type RecalledEntry = Entry & { seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
@@ -55,6 +60,10 @@ function passkeyError(e: unknown): never {
   if (isMeraError(e) && e.code === "PRF_UNAVAILABLE") throw new EngramError("PRF_UNAVAILABLE", PRF_HELP, { cause: e });
   if (isMeraError(e) && e.code === "PASSKEY_OPERATION_FAILED") throw new EngramError("PASSKEY_CANCELLED", "the passkey prompt was cancelled or failed", { cause: e });
   throw e;
+}
+
+export function assertAgentId(agentId: bigint) {
+  if (typeof agentId !== "bigint" || agentId < 0n || agentId > UINT256_MAX) fail("INPUT_INVALID", "agentId must be an integer in 0..2^256-1");
 }
 
 type Reauth = () => Promise<Uint8Array>;
@@ -88,73 +97,111 @@ function reauthFor(rpId: string, credentialId: string, webAuthnClient?: WebAuthn
     (await getPasskeyPrfOutput({ rpId, credential: { credentialId }, prfSalt: ROOT_SALT, webAuthnClient }).catch(passkeyError)).prfOutput;
 }
 
+const ended = () => new EngramError("SESSION_ENDED", "this session has ended; sign in again");
+
 export class OwnerSession {
   readonly owner: Hex;
-  private readonly prf: Uint8Array;
-  private readonly signing: Secp256k1SigningSession;
-  private readonly account: LocalAccount;
-  private readonly labels = new Map<string, string>(); // nsId -> label seen in this session
-  private ended = false;
-  private lastActivity: number;
-  private lastCeremony: number;
+  // Secrets live in ES private fields: invisible to JSON.stringify, util.inspect, and Object.keys (BUGLOG S5).
+  readonly #prf: Uint8Array;
+  readonly #signing: Secp256k1SigningSession;
+  readonly #account: LocalAccount;
+  readonly #config: EngramConfig;
+  readonly #reauth: Reauth | undefined;
+  readonly #clock: () => number;
+  readonly #labels = new Map<string, string>(); // nsId -> label seen in this session
+  #ended = false;
+  #lastActivity: number;
+  #lastCeremony: number;
 
-  private constructor(
-    private readonly config: EngramConfig,
-    prf: Uint8Array,
-    private readonly reauth: Reauth | undefined,
-    private readonly clock: () => number,
-  ) {
-    this.prf = new Uint8Array(prf);
-    const acc = crypto(() => deriveAccount(this.prf));
-    this.signing = createSecp256k1SigningSession({ privateKey: acc.accountKey });
+  private constructor(config: EngramConfig, prf: Uint8Array, reauth: Reauth | undefined, clock: () => number) {
+    this.#config = config;
+    this.#reauth = reauth;
+    this.#clock = clock;
+    this.#prf = new Uint8Array(prf);
+    const acc = crypto(() => deriveAccount(this.#prf));
+    this.#signing = createSecp256k1SigningSession({ privateKey: acc.accountKey });
     acc.accountKey.fill(0);
-    this.account = toViemAccount(this.signing) as LocalAccount;
+    this.#account = toViemAccount(this.#signing) as LocalAccount;
     this.owner = acc.owner;
-    this.lastActivity = this.lastCeremony = clock();
+    this.#lastActivity = this.#lastCeremony = clock();
   }
 
   static async open(config: EngramConfig, prf: Uint8Array, reauth: Reauth | undefined, clock: () => number = Date.now) {
     return new OwnerSession(config, prf, reauth, clock);
   }
 
-  private get log() {
-    return loggerOf(this.config);
+  toJSON() {
+    return { owner: this.owner, ended: this.#ended };
   }
-  private get reads() {
-    return chainReads(this.config);
-  }
-  private get ctx(): BindingContext {
-    return { chainId: BigInt(this.config.chainId), registry: this.config.registry, owner: this.owner };
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `OwnerSession { owner: '${this.owner}', ended: ${this.#ended} }`;
   }
 
-  /** Session guard: ended / idle-expired checks and activity bump. */
+  private get log() {
+    return loggerOf(this.#config);
+  }
+  private get reads() {
+    return chainReads(this.#config);
+  }
+  private get ctx(): BindingContext {
+    return { chainId: BigInt(this.#config.chainId), registry: this.#config.registry, owner: this.owner };
+  }
+
+  /** Session guard at call entry: ended / idle-expired checks and activity bump. */
   private touch() {
-    if (this.ended) fail("SESSION_ENDED", "this session has ended; sign in again");
-    if (this.clock() - this.lastActivity > SESSION_IDLE_MS) {
+    this.live();
+    const now = this.#clock();
+    if (now - this.#lastActivity > SESSION_IDLE_MS) {
       this.end();
       fail("SESSION_EXPIRED", "the session expired after 15 minutes of inactivity; unlock with your passkey");
     }
-    this.lastActivity = this.clock();
+    this.#lastActivity = Math.max(this.#lastActivity, now);
+  }
+
+  /** Liveness check after every await: a call in flight when end() runs must not continue (BUGLOG S5). */
+  private live() {
+    if (this.#ended) throw ended();
   }
 
   private nsIdOf(label: string): Hex {
-    const id = toHex(crypto(() => deriveNamespaceId(this.prf, label)));
-    this.labels.set(id.toLowerCase(), label);
+    const id = toHex(crypto(() => deriveNamespaceId(this.#prf, label)));
+    this.#labels.set(id.toLowerCase(), label);
     return id;
   }
 
   private nsKey(label: string, epoch: bigint) {
-    return deriveNamespaceKey(this.prf, label, epoch);
+    this.live();
+    return deriveNamespaceKey(this.#prf, label, epoch);
   }
 
-  /** Signs and relays one owner call; re-signs once if another tab consumed the nonce first. */
-  private async relay(functionName: string, args: readonly unknown[]) {
+  /**
+   * Signs and relays one owner call, then verifies the effect: the transaction must be a successful
+   * `relay(...)` to the registry carrying exactly this signed request (BUGLOG S2). Re-signs once if another
+   * tab consumed the nonce first.
+   */
+  private async relay(functionName: string, args: readonly unknown[]): Promise<TransactionReceipt> {
     const data = encodeFunctionData({ abi: memoryRegistryAbi, functionName: functionName as never, args: args as never });
+    const { publicClient } = clientsFor(this.#config);
     for (let attempt = 0; ; attempt++) {
-      const req = await signOwnerCall(this.config, this.account, data);
+      this.live();
+      let req: RelayRequest;
       try {
-        const { txHash } = await this.config.relayer.submit(req);
-        return clientsFor(this.config).publicClient.waitForTransactionReceipt({ hash: txHash });
+        req = await signOwnerCall(this.#config, this.#account, data);
+      } catch (e) {
+        if (isMeraError(e) && e.code === "SESSION_ENDED") throw ended();
+        throw e;
+      }
+      this.live();
+      try {
+        const { txHash } = await this.#config.relayer.submit(req);
+        const [receipt, tx] = await Promise.all([
+          publicClient.waitForTransactionReceipt({ hash: txHash }),
+          publicClient.getTransaction({ hash: txHash }),
+        ]);
+        if (!isOurRelay(this.#config.registry, receipt, tx, req)) {
+          throw new EngramError("RELAY_REJECTED", "the relayer did not execute this request", { detail: "EFFECT_NOT_FOUND" });
+        }
+        return receipt;
       } catch (e) {
         const stale = e instanceof EngramError && (e.detail === "BAD_SIGNATURE" || e.detail === "BadSignature");
         if (!stale || attempt >= 1) throw e;
@@ -175,7 +222,7 @@ export class OwnerSession {
         const envelope = await encryptEntry({ key: this.nsKey(label, ns.epoch), ctx: this.ctx, nsId: hexToBytes(nsId), epoch: ns.epoch, plaintext });
         try {
           const receipt = await this.relay("appendAsOwner", [nsId, ns.epoch, toHex(envelope)]);
-          return { seq: seqFrom(receipt.logs), txHash: receipt.transactionHash };
+          return { seq: seqFrom(this.#config.registry, receipt, this.owner, nsId), txHash: receipt.transactionHash };
         } catch (e) {
           if (!(e instanceof EngramError && e.detail === "WrongEpoch") || attempt >= 1) throw e; // rotated meanwhile
         }
@@ -188,19 +235,22 @@ export class OwnerSession {
       this.touch();
       const nsId = this.nsIdOf(label);
       const ns = await this.reads.namespace(this.owner, nsId);
+      this.live();
       if (!ns.exists) return { entries: [], skipped: 0, complete: true, missingSeqs: [] };
-      const got = dedupe(await this.config.source.entries({ owner: this.owner, nsId }), ns.nextSeq);
+      const got = dedupe(await this.#config.source.entries({ owner: this.owner, nsId }), ns.nextSeq);
       const missingSeqs = missing(got, ns.nextSeq);
       const entries: RecalledEntry[] = [];
       let skipped = 0;
       for (const e of got) {
+        const key = this.nsKey(label, e.epoch); // throws SESSION_ENDED if end() ran meanwhile
         try {
-          const pt = await decryptEntry({ key: this.nsKey(label, e.epoch), ctx: this.ctx, nsId: hexToBytes(nsId), epoch: e.epoch, envelope: hexToBytes(e.ciphertext) });
+          const pt = await decryptEntry({ key, ctx: this.ctx, nsId: hexToBytes(nsId), epoch: e.epoch, envelope: hexToBytes(e.ciphertext) });
           entries.push({ ...parseEntry(pt), seq: e.seq, epoch: e.epoch, byOwner: e.byOwner, agentId: e.agentId, txHash: e.txHash });
         } catch {
           skipped++;
         }
       }
+      this.live();
       Object.assign(extra, { count: entries.length, skipped, missingSeqs });
       return { entries, skipped, complete: missingSeqs.length === 0, missingSeqs };
     });
@@ -211,6 +261,7 @@ export class OwnerSession {
     return traced(this.log, "owner", "grant", { label, agentId, scope: opts.scope }, async () => {
       this.touch();
       const nsId = this.nsIdOf(label);
+      assertAgentId(agentId);
       if (opts.scope !== "read" && opts.scope !== "readwrite") fail("INPUT_INVALID", "scope must be read or readwrite");
       if (!Number.isSafeInteger(opts.expiresInSec) || opts.expiresInSec <= 0 || opts.expiresInSec > MAX_EXPIRY_SEC) {
         fail("INPUT_INVALID", "expiresInSec must be 1..31536000 (365 days)");
@@ -220,11 +271,21 @@ export class OwnerSession {
         fail("AGENT_KEYS_NOT_CURRENT", `agent ${agentId} has no current keys (not published, or its ERC-8004 token changed hands)`);
       }
       const keys = await this.reads.agentKeys(agentId);
-      const sourceKeys = await this.config.source.agentKeys?.(agentId).catch(() => undefined);
+      const sourceKeys = await this.#config.source.agentKeys?.(agentId).catch(() => undefined);
       if (sourceKeys && sourceKeys.x25519Pub.toLowerCase() !== keys.x25519Pub.toLowerCase()) {
         this.log({ stage: "sdk", side: "owner", op: "grant", traceId: "-", ok: true, code: "SOURCE_KEYS_MISMATCH", agentId: agentId.toString() });
       }
       let ns = await this.reads.namespace(this.owner, nsId);
+      // A 17th grantee: rotate first if any grantee is expired or stale (they get revoked), else refuse (case 35).
+      if (ns.exists) {
+        const grantees = await this.reads.grantees(this.owner, nsId);
+        if (!grantees.includes(agentId) && grantees.length >= MAX_GRANTEES) {
+          const plan = await this.keepPlan(label, nsId, ns.epoch + 1n, []);
+          if (plan.revoke.length === 0) fail("INPUT_INVALID", `a folder can be shared with at most ${MAX_GRANTEES} agents; revoke one first`);
+          await this.rotateWith(label, []);
+          ns = await this.reads.namespace(this.owner, nsId);
+        }
+      }
       const epochs: bigint[] = [];
       for (let e = opts.includeHistory ? 0n : ns.epoch; e <= ns.epoch; e++) epochs.push(e);
       const wraps = await cryptoAsync(() =>
@@ -247,6 +308,7 @@ export class OwnerSession {
     return traced(this.log, "owner", "revoke", { label, agentIds }, async () => {
       this.touch();
       if (agentIds.length === 0) fail("INPUT_INVALID", "agentIds must not be empty (use rotate)");
+      agentIds.forEach(assertAgentId);
       return this.rotateWith(label, agentIds);
     });
   }
@@ -258,32 +320,50 @@ export class OwnerSession {
     });
   }
 
-  /** Keep set mirrors the contract's prune: grantees minus revoked minus expired minus not-current keys. */
-  private async rotateWith(label: string, revokeIds: bigint[]) {
+  /**
+   * Splits the grantees for a rotation to `newEpoch` into what the contract will accept:
+   * keep = live grantees whose key wraps; revoke = requested ids, near-expiry (< 60 s) or stale-key grantees,
+   * and grantees whose key cannot be wrapped (BUGLOG S3, S6). Wrapped keys are returned for the keep set.
+   */
+  private async keepPlan(label: string, nsId: Hex, newEpoch: bigint, requested: bigint[]) {
+    const now = await this.reads.chainTime();
+    const revoke = [...requested];
+    const keep: bigint[] = [];
+    const wraps: Hex[] = [];
+    for (const id of await this.reads.grantees(this.owner, nsId)) {
+      if (revoke.includes(id)) continue;
+      const g = await this.reads.grant(this.owner, nsId, id);
+      if (g.expiry <= now + EXPIRY_MARGIN_SEC || !(await this.reads.hasCurrentKeys(id))) {
+        revoke.push(id);
+        continue;
+      }
+      try {
+        const wrap = await wrapNamespaceKey({
+          ctx: this.ctx, nsId: hexToBytes(nsId), epoch: newEpoch, agentId: id, nsKey: this.nsKey(label, newEpoch), label,
+          agentX25519Public: hexToBytes((await this.reads.agentKeys(id)).x25519Pub),
+        });
+        keep.push(id);
+        wraps.push(toHex(wrap));
+      } catch (e) {
+        if (!(e instanceof EngramCryptoError)) throw e;
+        this.log({ stage: "sdk", side: "owner", op: "rotate", traceId: "-", ok: true, code: "UNWRAPPABLE_KEY_REVOKED", agentId: id.toString() });
+        revoke.push(id);
+      }
+    }
+    return { keep, wraps, revoke };
+  }
+
+  private async rotateWith(label: string, requested: bigint[]) {
     const nsId = this.nsIdOf(label);
     for (let attempt = 0; ; attempt++) {
       const ns = await this.reads.namespace(this.owner, nsId);
       if (!ns.exists) fail("INPUT_INVALID", `no namespace "${label}" yet`);
       const newEpoch = ns.epoch + 1n;
-      const now = await this.reads.chainTime();
-      const keep: bigint[] = [];
-      for (const id of await this.reads.grantees(this.owner, nsId)) {
-        if (revokeIds.includes(id)) continue;
-        const g = await this.reads.grant(this.owner, nsId, id);
-        if (g.expiry > now && (await this.reads.hasCurrentKeys(id))) keep.push(id);
-      }
-      const wraps = await Promise.all(
-        keep.map(async (id) =>
-          toHex(await wrapNamespaceKey({
-            ctx: this.ctx, nsId: hexToBytes(nsId), epoch: newEpoch, agentId: id, nsKey: this.nsKey(label, newEpoch), label,
-            agentX25519Public: hexToBytes((await this.reads.agentKeys(id)).x25519Pub),
-          })),
-        ),
-      );
+      const plan = await this.keepPlan(label, nsId, newEpoch, requested);
       try {
-        const receipt = revokeIds.length
-          ? await this.relay("revoke", [nsId, revokeIds, keep, wraps])
-          : await this.relay("rotate", [nsId, keep, wraps]);
+        const receipt = plan.revoke.length
+          ? await this.relay("revoke", [nsId, plan.revoke, plan.keep, plan.wraps])
+          : await this.relay("rotate", [nsId, plan.keep, plan.wraps]);
         return { txHash: receipt.transactionHash, newEpoch };
       } catch (e) {
         if (!(e instanceof EngramError && e.detail === "KeepSetMismatch") || attempt >= 1) throw e;
@@ -294,7 +374,7 @@ export class OwnerSession {
   async grants(): Promise<GrantView[]> {
     return traced(this.log, "owner", "grants", {}, async () => {
       this.touch();
-      const rows = await this.config.source.grantsForOwner(this.owner);
+      const rows = await this.#config.source.grantsForOwner(this.owner);
       const out: GrantView[] = [];
       for (const g of rows) {
         const [onchain, active, keysCurrent, agentURI] = await Promise.all([
@@ -304,10 +384,11 @@ export class OwnerSession {
           this.reads.tokenURI(g.agentId),
         ]);
         out.push({
-          nsId: g.nsId, label: this.labels.get(g.nsId.toLowerCase()), agentId: g.agentId, agentURI,
+          nsId: g.nsId, label: this.#labels.get(g.nsId.toLowerCase()), agentId: g.agentId, agentURI,
           scope: onchain.scope === 3 ? "readwrite" : "read", expiry: onchain.expiry, active, keysCurrent,
         });
       }
+      this.live();
       return out;
     });
   }
@@ -322,39 +403,66 @@ export class OwnerSession {
   }
 
   end() {
-    if (this.ended) return;
-    this.ended = true;
-    this.prf.fill(0);
-    this.signing.end();
+    if (this.#ended) return;
+    this.#ended = true;
+    this.#prf.fill(0);
+    this.#signing.end();
   }
 
+  /** A clock that went backwards never counts as "recent" (BUGLOG S5). */
   private async freshCeremony() {
-    if (!this.reauth || this.clock() - this.lastCeremony <= REAUTH_WINDOW_MS) return;
-    const prf2 = await this.reauth();
+    const elapsed = this.#clock() - this.#lastCeremony;
+    if (!this.#reauth || (elapsed >= 0 && elapsed <= REAUTH_WINDOW_MS)) return;
+    const prf2 = await this.#reauth();
     const owner2 = crypto(() => deriveAccount(prf2)).owner;
     prf2.fill(0);
     if (owner2.toLowerCase() !== this.owner.toLowerCase()) fail("REAUTH_MISMATCH", "a different passkey answered; approve with the passkey you signed in with");
-    this.lastCeremony = this.clock();
+    this.live();
+    this.#lastCeremony = this.#clock();
   }
 }
 
 // ------------------------------------------------------------------------------------------ helpers
 
-function seqFrom(logs: readonly { data: Hex; topics: readonly Hex[] }[]): bigint {
-  for (const l of logs) {
-    try {
-      const ev = decodeEventLog({ abi: memoryRegistryAbi, data: l.data, topics: l.topics as never });
-      if (ev.eventName === "EntryAppended") return (ev.args as { seq: bigint }).seq;
-    } catch {
-      /* other contract's log */
-    }
+/** The tx must be a successful `relay(owner, data, deadline, signature)` call to the registry with exactly `req`. */
+function isOurRelay(registry: Hex, receipt: TransactionReceipt, tx: { to: Hex | null; input: Hex }, req: RelayRequest): boolean {
+  if (receipt.status !== "success" || !tx.to || tx.to.toLowerCase() !== registry.toLowerCase()) return false;
+  try {
+    const call = decodeFunctionData({ abi: memoryRegistryAbi, data: tx.input });
+    if (call.functionName !== "relay") return false;
+    const [owner, data, deadline, signature] = call.args as [Hex, Hex, bigint, Hex];
+    return (
+      owner.toLowerCase() === req.owner.toLowerCase() &&
+      data.toLowerCase() === req.data.toLowerCase() &&
+      deadline.toString() === req.deadline &&
+      signature.toLowerCase() === req.signature.toLowerCase()
+    );
+  } catch {
+    return false;
   }
-  throw new EngramError("TX_REVERTED", "append transaction emitted no EntryAppended event");
 }
 
+/** seq of the EntryAppended this owner's append emitted (registry address, owner, and namespace must match). */
+function seqFrom(registry: Hex, receipt: TransactionReceipt, owner: Hex, nsId: Hex): bigint {
+  for (const l of receipt.logs) {
+    if (l.address.toLowerCase() !== registry.toLowerCase()) continue;
+    try {
+      const ev = decodeEventLog({ abi: memoryRegistryAbi, data: l.data, topics: l.topics as never });
+      const a = ev.args as { owner?: Hex; nsId?: Hex; seq?: bigint };
+      if (ev.eventName === "EntryAppended" && a.owner?.toLowerCase() === owner.toLowerCase() && a.nsId?.toLowerCase() === nsId.toLowerCase()) {
+        return a.seq!;
+      }
+    } catch {
+      /* other log */
+    }
+  }
+  throw new EngramError("RELAY_REJECTED", "the append emitted no matching EntryAppended event", { detail: "EFFECT_NOT_FOUND" });
+}
+
+/** In-range, deduplicated, seq-ordered entries (negative or >= nextSeq seqs from a source are dropped). */
 export function dedupe<T extends { seq: bigint }>(entries: T[], nextSeq: bigint): T[] {
   const bySeq = new Map<bigint, T>();
-  for (const e of entries) if (e.seq < nextSeq && !bySeq.has(e.seq)) bySeq.set(e.seq, e);
+  for (const e of entries) if (e.seq >= 0n && e.seq < nextSeq && !bySeq.has(e.seq)) bySeq.set(e.seq, e);
   return [...bySeq.values()].sort((a, b) => (a.seq < b.seq ? -1 : 1));
 }
 

@@ -7,8 +7,11 @@ import { clientsFor } from "./config.js";
 import { EngramError } from "./errors.js";
 
 export type SourceEntry = { seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; ciphertext: Hex; txHash: Hex };
-/** `generation` increments each time an inactive grant becomes active again; only current-generation wraps are valid. */
-export type SourceWrap = { epoch: bigint; wrap: Hex; generation: number };
+/**
+ * `generation` increments each time an inactive grant becomes active again; only current-generation wraps are valid.
+ * `txHash`/`logIndex` locate the KeyWrapped event so agents can verify the wrap in the receipt (sdk.md trust boundaries).
+ */
+export type SourceWrap = { epoch: bigint; wrap: Hex; generation: number; txHash: Hex; logIndex: number };
 export type SourceGrant = { owner: Hex; nsId: Hex; agentId: bigint; scope: number; expiry: bigint; active: boolean; generation: number };
 
 export interface MemorySource {
@@ -36,7 +39,8 @@ export function logsSource(opts: { rpcUrl: string; registry: Hex; fromBlock: big
 
   async function logs(name: string, args: Record<string, unknown>) {
     try {
-      const head = await publicClient.getBlockNumber();
+      const head = await publicClient.getBlockNumber({ cacheTime: 0 }); // never a cached head (BUGLOG S7)
+      if (range <= 0n) throw new EngramError("INPUT_INVALID", "blockRange must be positive");
       const out: Array<{ args: any; blockNumber: bigint; logIndex: number; transactionHash: Hex }> = [];
       for (let from = opts.fromBlock; from <= head; from += range) {
         const to = from + range - 1n > head ? head : from + range - 1n;
@@ -45,11 +49,12 @@ export function logsSource(opts: { rpcUrl: string; registry: Hex; fromBlock: big
       }
       return out;
     } catch (e) {
+      if (e instanceof EngramError) throw e;
       throw unavailable("chain logs source", e);
     }
   }
 
-  type Ev = { kind: "set" | "revoked" | "wrapped"; args: any; blockNumber: bigint; logIndex: number };
+  type Ev = { kind: "set" | "revoked" | "wrapped"; args: any; blockNumber: bigint; logIndex: number; transactionHash: Hex };
   /** Replays grant events in chain order to compute active/generation exactly like the indexer. */
   function replay(events: Ev[]) {
     events.sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1));
@@ -69,7 +74,7 @@ export function logsSource(opts: { rpcUrl: string; registry: Hex; fromBlock: big
       } else if (e.kind === "revoked" && g) {
         g.active = false;
       } else if (e.kind === "wrapped" && g) {
-        g.wraps.set(e.args.epoch, { epoch: e.args.epoch, wrap: lc(e.args.wrap), generation: g.generation });
+        g.wraps.set(e.args.epoch, { epoch: e.args.epoch, wrap: lc(e.args.wrap), generation: g.generation, txHash: lc(e.transactionHash), logIndex: e.logIndex });
       }
     }
     return grants;
@@ -122,9 +127,12 @@ export function graphqlSource(url: string, opts: { headers?: Record<string, stri
     } catch (e) {
       throw unavailable("indexer", e);
     }
-    const json = (await res.json().catch(() => ({}))) as { data?: T; errors?: unknown };
-    if (!res.ok || !json.data) throw unavailable("indexer", json.errors ?? res.status);
-    return json.data;
+    const json = (await res.json().catch(() => ({}))) as { data?: Record<string, unknown>; errors?: unknown };
+    // Partial data or any errors means the answer cannot be trusted to be complete (BUGLOG S7).
+    if (!res.ok || !json.data || json.errors) throw unavailable("indexer", json.errors ?? res.status);
+    for (const v of Object.values(json.data)) if (!Array.isArray(v)) throw unavailable("indexer", "partial data");
+    if (Object.keys(json.data).length === 0) throw unavailable("indexer", "empty data");
+    return json.data as T;
   }
   const toGrant = (g: any): SourceGrant => ({
     owner: lc(g.owner), nsId: lc(g.namespace.nsId), agentId: BigInt(g.agent_id), scope: g.scope, expiry: BigInt(g.expiry), active: g.active, generation: g.generation,
@@ -141,14 +149,16 @@ export function graphqlSource(url: string, opts: { headers?: Record<string, stri
         );
         for (const e of d.Entry) out.push({ seq: BigInt(e.seq), epoch: BigInt(e.epoch), byOwner: e.byOwner, agentId: BigInt(e.agentId), ciphertext: e.ciphertext, txHash: e.txHash });
         if (d.Entry.length < 500) return out;
-        after = out.at(-1)!.seq;
+        const last = out.at(-1)!.seq;
+        if (last <= after) throw unavailable("indexer", "page cursor did not advance");
+        after = last;
       }
     },
     async wraps({ owner, nsId, agentId }) {
-      const d = await q<{ WrappedKey: any[] }>(`query($g:String!){ WrappedKey(where:{grant_id:{_eq:$g}}){ epoch wrap generation } }`, {
+      const d = await q<{ WrappedKey: any[] }>(`query($g:String!){ WrappedKey(where:{grant_id:{_eq:$g}}){ epoch wrap generation txHash logIndex } }`, {
         g: `${lc(owner)}-${lc(nsId)}-${agentId}`,
       });
-      return d.WrappedKey.map((w) => ({ epoch: BigInt(w.epoch), wrap: w.wrap, generation: w.generation }));
+      return d.WrappedKey.map((w) => ({ epoch: BigInt(w.epoch), wrap: w.wrap, generation: w.generation, txHash: w.txHash, logIndex: w.logIndex }));
     },
     async grantsForAgent(agentId) {
       const d = await q<{ Grant: any[] }>(`query($a:String!){ Grant(where:{agent_id:{_eq:$a}}){ ${GRANT} } }`, { a: agentId.toString() });

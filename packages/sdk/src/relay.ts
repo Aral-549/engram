@@ -131,45 +131,63 @@ export function createRelayHandler(opts: {
       log({ stage: "sdk", side: "relay", op: "relay", traceId: id, ok: res.status === 200, code: res.body.code, status: res.status, durationMs: Date.now() - t0, ...fields });
       return res;
     };
-    const b = raw as Partial<RelayRequest> | null;
-    if (!b || typeof b !== "object" || !isAddress(String(b.owner)) || !isHex(b.data) || !isHex(b.signature) || !/^\d{1,20}$/.test(String(b.deadline))) {
-      return done(reject(400, "BAD_REQUEST", "expected { owner, data, deadline, signature }"));
-    }
-    const owner = b.owner as Hex;
-    if (!within("*", global) || !within(owner.toLowerCase(), perOwner)) return done(reject(429, "RATE_LIMITED", "too many requests"), { owner });
+    const b = raw as Record<string, unknown> | null;
+    const ok =
+      !!b && typeof b === "object" && !Array.isArray(b) &&
+      typeof b.owner === "string" && isAddress(b.owner) &&
+      typeof b.data === "string" && isHex(b.data) &&
+      typeof b.signature === "string" && isHex(b.signature) &&
+      (typeof b.deadline === "string" || typeof b.deadline === "number") && /^\d{1,20}$/.test(String(b.deadline));
+    if (!ok) return done(reject(400, "BAD_REQUEST", "expected { owner, data, deadline, signature }"));
+    const owner = b!.owner as Hex;
+    // Two per-owner buckets (BUGLOG S4): requests rejected before the signature verifies are charged to an
+    // "unverified" bucket, verified ones to a separate bucket. Floods of forged requests naming a victim are
+    // throttled, but can never use up the victim's own budget.
+    if (!within("*", global)) return done(reject(429, "RATE_LIMITED", "too many requests"), { owner });
+    const unverified = (res: RelayResponse, fields: Record<string, unknown> = {}) =>
+      done(within(`u:${owner.toLowerCase()}`, perOwner) ? res : reject(429, "RATE_LIMITED", "too many rejected requests for this owner"), { owner, ...fields });
 
     let fn: string;
     try {
-      fn = decodeFunctionData({ abi: memoryRegistryAbi, data: b.data }).functionName;
+      fn = decodeFunctionData({ abi: memoryRegistryAbi, data: b!.data as Hex }).functionName;
     } catch {
-      return done(reject(400, "SELECTOR_NOT_ALLOWED", "calldata is not a registry call"), { owner });
+      return unverified(reject(400, "SELECTOR_NOT_ALLOWED", "calldata is not a registry call"));
     }
-    if (!(RELAYABLE as readonly string[]).includes(fn)) return done(reject(400, "SELECTOR_NOT_ALLOWED", `${fn} cannot be relayed`), { owner, fn });
+    if (!(RELAYABLE as readonly string[]).includes(fn)) return unverified(reject(400, "SELECTOR_NOT_ALLOWED", `${fn} cannot be relayed`), { fn });
 
-    const deadline = BigInt(b.deadline!);
-    const [nonce, block] = await Promise.all([
-      publicClient.readContract({ address: config.registry, abi: memoryRegistryAbi, functionName: "nonces", args: [owner] }),
-      publicClient.getBlock(),
-    ]);
-    if (deadline < block.timestamp) return done(reject(400, "EXPIRED", "deadline has passed"), { owner, fn });
+    const data = b!.data as Hex;
+    const signature = b!.signature as Hex;
+    const deadline = BigInt(String(b!.deadline));
+    let nonce: bigint;
+    let block: { timestamp: bigint };
+    try {
+      [nonce, block] = await Promise.all([
+        publicClient.readContract({ address: config.registry, abi: memoryRegistryAbi, functionName: "nonces", args: [owner] }),
+        publicClient.getBlock(),
+      ]);
+    } catch {
+      return done(reject(502, "UPSTREAM_UNAVAILABLE", "the chain RPC is unavailable"), { owner });
+    }
+    if (deadline < block.timestamp) return unverified(reject(400, "EXPIRED", "deadline has passed"), { fn });
 
     let signer: Hex | undefined;
     try {
       signer = await recoverTypedDataAddress({
         domain: ownerCallDomain(config), types: OWNER_CALL_TYPES, primaryType: "OwnerCall",
-        message: { owner, dataHash: keccak256(b.data), nonce, deadline }, signature: b.signature,
+        message: { owner, dataHash: keccak256(data), nonce, deadline }, signature,
       });
     } catch {
       signer = undefined;
     }
-    if (!signer || signer.toLowerCase() !== owner.toLowerCase()) return done(reject(400, "BAD_SIGNATURE", "signature does not match owner and nonce"), { owner, fn });
+    if (!signer || signer.toLowerCase() !== owner.toLowerCase()) return unverified(reject(400, "BAD_SIGNATURE", "signature does not match owner and nonce"), { fn });
+    if (!within(`v:${owner.toLowerCase()}`, perOwner)) return done(reject(429, "RATE_LIMITED", "too many requests for this owner"), { owner, fn });
 
     // Serialize sends so the relayer wallet's nonces never collide.
     const run = queue.then(async (): Promise<RelayResponse> => {
       try {
         const { request } = await publicClient.simulateContract({
           account: wallet.account, address: config.registry, abi: memoryRegistryAbi, functionName: "relay",
-          args: [owner, b.data!, deadline, b.signature!],
+          args: [owner, data, deadline, signature],
         });
         const txHash = await wallet.writeContract(request as never);
         const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
