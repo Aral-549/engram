@@ -187,3 +187,24 @@ resolved -- it's just hidden until the next rewrite.
 - **Stage/module:** scripts/register-agent.ts (funding step); contracts/integration.md case 2
 - **Regression case added:** `tests/golden/integration/register-agent.golden.test.ts` -- case 9
 - **Status:** fixed
+
+## 2026-10-02 -- H1: one owner could exhaust the agent's global chat budget
+- **Symptom:** with limits 5/owner and 20 global, owner A sending 30 chats made owner B's first chat return 429 (adversarial probe `global-budget-burn`).
+- **Root cause:** the global bucket was charged before the per-owner check, so A's refused requests still consumed global slots.
+- **Stage/module:** agent-kit `chat()` rate limiting
+- **Regression case added:** `tests/golden/agent-kit/agent-kit.hardening.golden.test.ts` -- case A18
+- **Status:** fixed
+
+## 2026-10-02 -- H2: an incomplete namespace stalled every recall tool call
+- **Symptom:** a source that never reports `complete` made one turn take ~9.3 s (initial read plus two recall tool calls, each waiting ~3 s).
+- **Root cause:** the A10 lag retry ran on every read, not just the first of the turn.
+- **Stage/module:** agent-kit `recallFresh`
+- **Regression case added:** `tests/golden/agent-kit/agent-kit.hardening.golden.test.ts` -- case A19
+- **Status:** fixed
+
+## 2026-10-02 -- H3: guardRequest accepted content types that only start with application/json
+- **Symptom:** `application/jsonp` and `application/json-seq` passed the JSON-only check.
+- **Root cause:** prefix match instead of comparing the media type. (Origin check still blocked cross-site posts.)
+- **Stage/module:** agent-kit `guardRequest`
+- **Regression case added:** `tests/golden/agent-kit/agent-kit.hardening.golden.test.ts` -- case A20
+- **Status:** fixed

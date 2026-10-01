@@ -43,14 +43,16 @@ Both agent apps are thin Next.js apps over one tested package:
 - **Auth:** every chat request needs the httpOnly session cookie (the verified app-session proof). The server keeps
   no state: each request re-verifies the proof and reads memory fresh (no plaintext cached between requests).
 - **Request hardening (review 2026-10-01, BUGLOG G1):** `/api/session` and `/api/chat` accept only
-  `content-type: application/json` with an `Origin` header equal to `APP_ORIGIN`; bodies are read with a hard cap
+  `content-type: application/json` (media type exactly, parameters like `charset` allowed) with an `Origin` header equal to `APP_ORIGIN`; bodies are read with a hard cap
   (session 4 KB, chat 64 KB) whether or not `content-length` is sent. The cookie is `HttpOnly; SameSite=Strict;
   Path=/`, `Secure` when `APP_ORIGIN` is https, and holds only the canonical proof fields (<= 1 KB, else rejected).
   `APP_ORIGIN` must be an exact origin or the server refuses to start.
 - **Turn budget (G2):** per chat turn at most 3 tool rounds, 3 `remember` writes, and 2 `recall` calls; extra calls
   get a tool error. Recall tool results are returned inside a `<user_memory>` block like the initial memory (G3).
 - **Who may chat (G4):** an owner with no grant record for this agent (never granted) gets 403 `NO_GRANT` and the
-  model is not called; per-owner (30/hour) and global (600/hour) chat limits return 429. Owners who revoked still
+  model is not called; per-owner (30/hour) and global (600/hour) chat limits return 429. A refused request
+  consumes neither budget, so one owner over their limit cannot exhaust the global budget (H1). Limits are per
+  server process. Owners who revoked still
   get answers without memory (case A6).
 - **Grant lookup (G5):** the server reads only the requesting owner's grants for this agent (never all grants),
   and uses the namespace whose authenticated label is in the persona's labels.
@@ -90,6 +92,9 @@ Both agent apps are thin Next.js apps over one tested package:
 | A15 | source down during chat; `tool_calls: [null]`; 500 emoji or escape-heavy text in remember | 503 `MEMORY_UNAVAILABLE`; no crash; `TOOL_ARGS_INVALID` (text must fit the 2048-byte entry) | G6, G7 |
 | A16 | proof padded with extra fields; non-exact `APP_ORIGIN` at startup | cookie holds only canonical fields (oversize rejected); `createAgentServer` throws | G8 |
 | A17 | request guard: wrong/missing Origin, non-JSON content type, chunked body over the cap | 403 / 415 / 413, handler never runs | G1 |
+| A18 | owner A sends 30 chats with limits 5/owner, 20 global; then owner B sends 1 | B gets 200 | H1 |
+| A19 | the source never completes; the model calls recall twice | one ~3 s wait for the initial read only; tool recalls read once; turn under 6 s | H2 |
+| A20 | content-type `application/jsonp`, `application/json-seq`, `text/json` | 415 | H3 |
 | A10 | the source lags the chain (recall reports `complete: false`) | the agent re-reads up to ~3 s until complete, then answers with all memories; still incomplete after that: answers with what it has | indexer lag (BUGLOG V-UI4) |
 
 ## Relayer (`apps/vault/api/relay`) {#relayer}

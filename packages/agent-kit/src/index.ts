@@ -46,7 +46,8 @@ export type GuardResult = { ok: true; json: unknown } | { ok: false; status: num
  */
 export async function guardRequest(req: Request, opts: { origin: string; maxBytes: number }): Promise<GuardResult> {
   if (req.headers.get("origin") !== opts.origin) return { ok: false, status: 403, code: "BAD_ORIGIN" };
-  if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return { ok: false, status: 415, code: "JSON_ONLY" };
+  const mediaType = (req.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  if (mediaType !== "application/json") return { ok: false, status: 415, code: "JSON_ONLY" }; // exact media type (H3)
   if (Number(req.headers.get("content-length") ?? 0) > opts.maxBytes) return { ok: false, status: 413, code: "BODY_TOO_LARGE" };
   const reader = req.body?.getReader();
   const chunks: Uint8Array[] = [];
@@ -130,14 +131,16 @@ function parseRememberArgs(raw: unknown): { kind: (typeof KINDS)[number]; text: 
   return { kind: kind as (typeof KINDS)[number], text: t };
 }
 
-function slidingWindow(counter: Map<string, number[]>, key: string, limit: number, now: number) {
-  const list = (counter.get(key) ?? []).filter((t) => now - t < 3_600_000);
-  if (list.length >= limit) {
-    counter.set(key, list);
-    return false;
-  }
-  list.push(now);
-  counter.set(key, list);
+/** Admits a request only if every (key, limit) bucket has room, and only then charges all of them (H1). */
+function admit(counter: Map<string, number[]>, buckets: [key: string, limit: number][], now: number) {
+  const lists = buckets.map(([key]) => {
+    const list = (counter.get(key) ?? []).filter((t) => now - t < 3_600_000);
+    if (list.length) counter.set(key, list);
+    else counter.delete(key);
+    return list;
+  });
+  if (lists.some((list, i) => list.length >= buckets[i]![1])) return false;
+  buckets.forEach(([key], i) => counter.set(key, [...lists[i]!, now]));
   return true;
 }
 
@@ -228,6 +231,7 @@ export function createAgentServer(opts: {
       const t0 = Date.now();
       const traceId = Math.random().toString(16).slice(2, 14);
       const saved: SavedMemory[] = [];
+      let lagBudget = LAG_RETRIES; // one ~3 s wait per turn in total, not per read (H2)
       const ownerAddr = await owner(cookie);
       if (!ownerAddr) return { status: 401, body: { saved, accessRevoked: false, code: "NOT_AUTHORIZED", message: "connect your Engram vault first" } };
       const turns = (Array.isArray(messages) ? messages : [])
@@ -248,7 +252,7 @@ export function createAgentServer(opts: {
           return { status: 403, body: { saved, accessRevoked: false, code: "NO_GRANT", message: "approve this agent in your vault first" } };
         }
         const now = Date.now();
-        if (!slidingWindow(hits, "*", global, now) || !slidingWindow(hits, ownerAddr.toLowerCase(), perOwner, now)) {
+        if (!admit(hits, [[ownerAddr.toLowerCase(), perOwner], ["*", global]], now)) {
           emit("chat", traceId, t0, { code: "RATE_LIMITED", owner: ownerAddr });
           return { status: 429, body: { saved, accessRevoked: false, code: "RATE_LIMITED", message: "too many messages; try again later" } };
         }
@@ -307,7 +311,8 @@ export function createAgentServer(opts: {
         try {
           // The indexer can trail the chain by ~1 s; re-read briefly so fresh facts are not missing (A10).
           let r = await agent.recall(ownerAddr!, ns);
-          for (let i = 0; i < LAG_RETRIES && !r.complete; i++) {
+          while (lagBudget > 0 && !r.complete) {
+            lagBudget--;
             await new Promise((res) => setTimeout(res, LAG_RETRY_MS));
             r = await agent.recall(ownerAddr!, ns);
           }
