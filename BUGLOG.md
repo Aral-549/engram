@@ -180,3 +180,10 @@ resolved -- it's just hidden until the next rewrite.
 - **Stage/module:** agent-kit (packages/agent-kit/src/index.ts), agent app client
 - **Regression case added:** `tests/golden/agent-kit/agent-kit.regressions.golden.test.ts` -- A11-A16
 - **Status:** fixed
+
+## 2026-10-02 -- K1: register-agent funded the operator again on every rerun
+- **Symptom:** rerunning `scripts/register-agent.ts --fund 0.05` logged `operator-funded` again (found by the real-testnet integration test).
+- **Root cause:** the top-up threshold was a fixed 0.1 MON; any `--fund` below 0.1 leaves the balance under it forever. The contract specified the fixed threshold, so the spec was wrong too.
+- **Stage/module:** scripts/register-agent.ts (funding step); contracts/integration.md case 2
+- **Regression case added:** `tests/golden/integration/register-agent.golden.test.ts` -- case 9
+- **Status:** fixed
