@@ -70,7 +70,13 @@ function Consent() {
       }
       txHash = r.txHash;
     }
-    reply({ ok: true, owner: s.owner, granted: req.labels, txHash: txHash! });
+    // Identity for the app's server (verifyAppSession). Signed in-session: no extra passkey prompt.
+    const sessionProof = await run((x) => x.signAppSession({ agentId: req.agentId, origin: req.origin, ttlSec: Math.min(req.expiresInSec, 30 * 86400) }));
+    if (!sessionProof) {
+      setPhase("review");
+      return;
+    }
+    reply({ ok: true, owner: s.owner, granted: req.labels, txHash: txHash!, sessionProof });
     setPhase("done");
     setTimeout(() => window.close(), 1400);
   }

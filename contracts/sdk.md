@@ -43,8 +43,18 @@ Owner (vault origin only)
 - `session.end()` -- zeroes keys, ends the Mera signing session.
 
 App client (any origin)
-- `connectEngram({ vaultUrl, agentId, labels, scope, expiresInSec })` -> `{ owner, granted, txHash }`.
+- `connectEngram({ vaultUrl, agentId, labels, scope, expiresInSec })` -> `{ owner, granted, txHash, sessionProof }`.
   Opens `${vaultUrl}/connect?...` in a popup, resolves on the vault's `postMessage` reply.
+- **App sessions.** A grant says *what* an agent may read; it does not prove *who is asking* the app. The vault
+  therefore returns a `sessionProof`: an EIP-712 signature by the owner key over
+  `AppSession(address owner, uint256 agentId, string origin, uint256 issuedAt, uint256 expiresAt)`, domain
+  `{ name: "EngramAppSession", version: "1", chainId, verifyingContract: registry }`. Signed inside the vault
+  session (no extra prompt). Lifetime <= the grant's expiry and <= 30 days.
+- App server side: `verifyAppSession(proof, { config, agentId, origin, now? })` -> owner address, or
+  `NOT_AUTHORIZED`. It checks the signature recovers `owner`, `agentId` and `origin` equal this app's, the proof is
+  unexpired, and `issuedAt` is not more than 60 s in the future. A valid proof never grants access by itself: memory
+  reads still require an active onchain grant.
+- Owner side: `session.signAppSession({ agentId, origin, ttlSec })` -> proof.
 - Vault side: `parseConnectRequest(url)` and `replyToOpener(opener, requestOrigin, result)` (posts with an exact
   `targetOrigin`, so a lying opener never receives the result).
 
@@ -113,6 +123,11 @@ Relay handler (vault server)
 | 40 | popup reply with ok:true but missing/invalid owner, txHash, or granted | ignored; the later valid reply resolves | |
 | 41 | `parseConnectRequest` with agentId >= 2^256, non-canonical numbers (`1e3`, `0x10`, `0007`), duplicate or empty labels, or a malformed agent card; `connectEngram` with invalid input | `INPUT_INVALID`; `originVerified: false` for the bad card; returned promise rejects (no sync throw) | |
 | 42 | `JSON.stringify` / `inspect` of an `OwnerSession` or `EngramAgent` | no PRF, account key, or X25519 private key | |
+| 43 | owner signs an app session for (agent 7, `https://planner.test`); app verifies with the same agentId and origin | returns the owner address | |
+| 44 | the same proof verified by an app with another agentId, or another origin | `NOT_AUTHORIZED` | |
+| 45 | expired proof; `issuedAt` more than 60 s in the future; ttl > 30 days at signing | `NOT_AUTHORIZED`; `NOT_AUTHORIZED`; `INPUT_INVALID` | |
+| 46 | proof signed by owner A with `owner` field changed to B; truncated or garbage signature | `NOT_AUTHORIZED` | |
+| 47 | valid proof, but the owner revoked the grant | agent `recall` still throws `ACCESS_REVOKED` | proof is not access |
 
 ## Trust boundaries (review 2026-10-01, BUGLOG S-series)
 - **Wraps are only trusted when chain-verified.** X25519 wraps give secrecy, not authenticity: anyone with an

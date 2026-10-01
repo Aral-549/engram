@@ -37,3 +37,4 @@ export {
   type ConnectRequest,
   type ConnectResult,
 } from "./connect.js";
+export { verifyAppSession, exactOrigin, APP_SESSION_MAX_TTL_SEC, type AppSessionProof } from "./appsession.js";

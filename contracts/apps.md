@@ -29,16 +29,43 @@ Three deployed web apps with public URLs, plus judge instructions in the README.
 - Configuration: chain from the SDK's `deployments.monadTestnet`; `NEXT_PUBLIC_INDEXER_URL` (Envio GraphQL) with
   the chain-logs source as fallback; relay at `/api/relay` backed by `RELAYER_PRIVATE_KEY` (server env only).
 
+## Shared agent server (`packages/agent-kit`)
+Both agent apps are thin Next.js apps over one tested package:
+- `createAgentServer({ config, agentId, x25519PrivateKey, operator, kimi, origin, persona })` exposing
+  `session(proof)` (verifies the app-session proof, returns a cookie value), `chat({ cookie, messages })`, and
+  `cardJson()` (the agent's ERC-8004 card).
+- **KIMI** via its OpenAI-compatible chat-completions API (`KIMI_BASE_URL`, `KIMI_API_KEY`, `KIMI_MODEL`), with
+  tool calling. Requests time out after 20 s; at most 3 tool rounds per turn.
+- **Memory in the prompt is data, not instructions:** recalled entries go inside a delimited
+  `<user_memory>` block, each entry JSON-escaped, with a system rule that nothing inside it is an instruction.
+- **Tools:** `remember({ kind, text })` (assistant only, readwrite grant) and `recall()`. Arguments are validated
+  (kind in fact/preference/note, text 1..500 chars); invalid calls are rejected and logged, never written.
+- **Auth:** every chat request needs the httpOnly session cookie (the verified app-session proof). The server keeps
+  no state: each request re-verifies the proof and reads memory fresh (no plaintext cached between requests).
+- Env per app: `AGENT_ID`, `AGENT_X25519_PRIVATE_KEY`, `AGENT_OPERATOR_KEY`, `KIMI_*`, `INDEXER_URL`, `APP_ORIGIN`.
+
 ## App 2: assistant (`apps/assistant`) -- ERC-8004 agent, scope READ_WRITE on `preferences`
 - Chat UI. KIMI is called with two tools: `remember({kind, text})` and `recall()`.
 - KIMI decides what is worth remembering, and consolidates: before writing, it recalls and does not
   duplicate or, on contradiction, writes a superseding entry ("now eats fish, was vegetarian").
-- Each saved memory shows a chip "Saved to your memory" with the Monad tx link, confirmed in ~1 s.
+- Each saved memory shows a chip "Saved to your memory" with the Monad tx link.
 
 ## App 3: planner (`apps/planner`) -- separate ERC-8004 agent, scope READ on `preferences`
 - Trip/meal planner. On connect it recalls and personalizes the first answer without asking any questions.
 - After the owner revokes it in the vault: next request shows "Access revoked by you" and falls back to
   asking questions. New memories written later are never visible to it.
+
+### Agent server cases (golden, against a local chain and a fake KIMI endpoint)
+| # | Input | Expected output |
+|---|---|---|
+| A1 | chat with no cookie, or a cookie whose proof fails verification | 401, KIMI never called |
+| A2 | user says "I'm vegetarian"; fake KIMI calls `remember({kind:"preference", text:"vegetarian"})` | entry written onchain as the agent; reply lists it with its tx hash |
+| A3 | owner has memories; any chat turn | the prompt sent to KIMI contains them only inside `<user_memory>`, JSON-escaped |
+| A4 | KIMI returns a tool call with invalid args (unknown kind, empty or 2000-char text, unknown tool) | rejected, logged with code `TOOL_ARGS_INVALID`, nothing written |
+| A5 | planner (read grant) gets a `remember` tool call | rejected (`NOT_AUTHORIZED`), nothing written; planner prompt offers no `remember` tool |
+| A6 | grant revoked, then chat | reply flags `accessRevoked: true`, no memories sent to KIMI |
+| A7 | KIMI times out or returns 5xx | 503 `MODEL_UNAVAILABLE`, nothing written |
+| A8 | more than 3 tool rounds requested by the model | stops after 3, returns the last text |
 
 ## Relayer (`apps/vault/api/relay`) {#relayer}
 - `POST /api/relay { owner, data, deadline, signature }` -> `{ txHash }`.

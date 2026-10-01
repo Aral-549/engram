@@ -2,6 +2,7 @@
 import type { Hex } from "viem";
 import { EngramError, fail } from "./errors.js";
 import type { GrantScope } from "./owner.js";
+import type { AppSessionProof } from "./appsession.js";
 
 const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -20,7 +21,7 @@ export type ConnectRequest = {
   /** True when the agent's ERC-8004 card lists an endpoint on `origin`. Show a warning when false. */
   originVerified: boolean;
 };
-export type ConnectResult = { owner: Hex; granted: string[]; txHash: Hex };
+export type ConnectResult = { owner: Hex; granted: string[]; txHash: Hex; sessionProof?: AppSessionProof };
 export type ConnectMessage = ({ ok: true } & ConnectResult) | { ok: false; code: string };
 /** ERC-8004 agent card (subset). */
 export type AgentCard = { name?: string; description?: string; image?: string; endpoints?: { name?: string; endpoint: string }[] };
@@ -87,7 +88,9 @@ export function connectEngram(opts: {
       if (!okShape && !failShape) return;
       cleanup();
       if (okShape) {
-        resolve({ owner: d.owner as Hex, granted: d.granted as string[], txHash: d.txHash as Hex });
+        // The proof is passed through untouched: the app server verifies it (verifyAppSession), not the browser.
+        const proof = d.sessionProof && typeof d.sessionProof === "object" ? (d.sessionProof as AppSessionProof) : undefined;
+        resolve({ owner: d.owner as Hex, granted: d.granted as string[], txHash: d.txHash as Hex, ...(proof ? { sessionProof: proof } : {}) });
       } else {
         reject(new EngramError(d.code === "USER_CANCELLED" ? "USER_CANCELLED" : "RELAY_REJECTED", "the vault did not grant access", { detail: d.code as string }));
       }

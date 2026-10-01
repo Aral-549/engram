@@ -30,6 +30,7 @@ import { clientsFor, loggerOf, type EngramConfig } from "./config.js";
 import { EngramError, crypto, cryptoAsync, fail } from "./errors.js";
 import { traced } from "./log.js";
 import { signOwnerCall, type RelayRequest } from "./relay.js";
+import { APP_SESSION_MAX_TTL_SEC, APP_SESSION_TYPES, appSessionDomain, exactOrigin, type AppSessionProof } from "./appsession.js";
 
 export const SESSION_IDLE_MS = 15 * 60 * 1000;
 export const REAUTH_WINDOW_MS = 60 * 1000;
@@ -390,6 +391,35 @@ export class OwnerSession {
       }
       this.live();
       return out;
+    });
+  }
+
+  /**
+   * Signs an app session proof (identity for one app and agent), inside the session: no passkey prompt.
+   * The app server checks it with `verifyAppSession`; it grants no access on its own.
+   */
+  async signAppSession(opts: { agentId: bigint; origin: string; ttlSec: number }): Promise<AppSessionProof> {
+    return traced(this.log, "owner", "signAppSession", { agentId: opts.agentId }, async () => {
+      this.touch();
+      assertAgentId(opts.agentId);
+      const origin = exactOrigin(opts.origin) ?? fail("INPUT_INVALID", "origin must be an exact http(s) origin");
+      if (!Number.isSafeInteger(opts.ttlSec) || opts.ttlSec <= 0 || opts.ttlSec > APP_SESSION_MAX_TTL_SEC) {
+        fail("INPUT_INVALID", `ttlSec must be 1..${APP_SESSION_MAX_TTL_SEC} (30 days)`);
+      }
+      const issuedAt = BigInt(Math.floor(Date.now() / 1000));
+      const expiresAt = issuedAt + BigInt(opts.ttlSec);
+      this.live();
+      let signature: Hex;
+      try {
+        signature = await this.#account.signTypedData({
+          domain: appSessionDomain(this.#config), types: APP_SESSION_TYPES, primaryType: "AppSession",
+          message: { owner: this.owner, agentId: opts.agentId, origin, issuedAt, expiresAt },
+        });
+      } catch (e) {
+        if (isMeraError(e) && e.code === "SESSION_ENDED") throw ended();
+        throw e;
+      }
+      return { owner: this.owner, agentId: opts.agentId.toString(), origin, issuedAt: issuedAt.toString(), expiresAt: expiresAt.toString(), signature };
     });
   }
 
