@@ -1,0 +1,35 @@
+{
+  "name": "@engram/agent-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "KIMI-powered demo agents (assistant / planner) connected to the user's vault (spec: contracts/apps.md)",
+  "license": "MIT",
+  "scripts": {
+    "dev:assistant": "dotenv -e .env.assistant -- next dev --port 3201",
+    "dev:planner": "dotenv -e .env.planner -- next dev --port 3202",
+    "build:assistant": "dotenv -e .env.assistant -- next build",
+    "build:planner": "dotenv -e .env.planner -- next build",
+    "start:assistant": "dotenv -e .env.assistant -- next start --port 3201",
+    "start:planner": "dotenv -e .env.planner -- next start --port 3202",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@engram/agent-kit": "*",
+    "@engram/sdk": "*",
+    "next": "16.3.8",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "server-only": "^0.0.1",
+    "viem": "^2.54.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "dotenv-cli": "^8.0.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.6.0"
+  }
+}
