@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const g = await guardRequest(req, { origin: process.env.APP_ORIGIN ?? "", maxBytes: 256 * 1024 });
+  const g = await guardRequest(req, { origin: process.env.APP_ORIGIN ?? "", maxBytes: 640 * 1024 });
   if (!g.ok) return Response.json({ saved: [], accessRevoked: false, code: g.code }, { status: g.status });
   const cookie = (await cookies()).get(COOKIE)?.value;
   const body = (g.json ?? {}) as { continuation?: unknown; result?: unknown };

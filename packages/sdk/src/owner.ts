@@ -29,6 +29,7 @@ import {
 } from "@engram/crypto";
 import { decodeEventLog, decodeFunctionData, encodeFunctionData, hexToBytes, toHex, type Hex, type LocalAccount, type TransactionReceipt } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import type { LogItem } from "@engram/crypto";
 import { selectCandidates, type Candidate, type DisclosedEntry, type DisclosureMode } from "./select.js";
 import { memoryRegistryAbi } from "./abi.js";
 import { chainReads } from "./chain.js";
@@ -55,6 +56,8 @@ export const POLICY_CACHE_MS = 3000;
 const DISCLOSE_LIMIT = { max: 60, windowMs: 10 * 60 * 1000 };
 const PROPOSE_LIMIT = { max: 20, windowMs: 24 * 60 * 60 * 1000 };
 const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const LOG_QUEUE_MAX = 500;
+const LOG_ENTRY_MAX_BYTES = 2048;
 const PROPOSE_KINDS = ["fact", "preference", "note"];
 
 export type PolicyView = { agentId: bigint; origin: string; labels: string[]; scope: GrantScope; exp: number; active: boolean; seq: bigint };
@@ -138,8 +141,16 @@ export class OwnerSession {
   readonly #discloseHits = new Map<string, number[]>();
   readonly #proposeHits = new Map<string, number[]>();
   #relayTail: Promise<void> = Promise.resolve();
-  #logTail: Promise<void> = Promise.resolve();
-  readonly #failedLogs: Uint8Array[] = [];
+  #foreground = 0; // user actions waiting for or holding the relay; background log writes yield to them (D34)
+  // Batched read log (D35): items wait here, at most LOG_QUEUE_MAX, and are written every 10-20 s.
+  readonly #logItems: LogItem[] = [];
+  #logDropped = 0;
+  #logTimer: ReturnType<typeof setTimeout> | undefined;
+  #logFlight: Promise<void> | undefined;
+  // Policy changes apply in call order (D36); a revoke counts from the moment it is called (D34).
+  #policyTail: Promise<unknown> = Promise.resolve();
+  #policyTicket = 0;
+  readonly #revokedAt = new Map<string, number>();
   readonly #pairwiseAddr = new Map<string, Hex>();
   #lastActivity: number;
   #lastCeremony: number;
@@ -210,8 +221,22 @@ export class OwnerSession {
    * `relay(...)` to the registry carrying exactly this signed request (BUGLOG S2). Re-signs once if another
    * tab consumed the nonce first.
    */
-  private async relay(functionName: string, args: readonly unknown[]): Promise<TransactionReceipt> {
-    // One relay at a time per session: background log appends must not race user actions for the nonce.
+  private async relay(functionName: string, args: readonly unknown[], background = false): Promise<TransactionReceipt> {
+    // One relay at a time per session: background log appends must not race user actions for the nonce, and they
+    // wait while any user action is queued, so a flood of reads can never delay a revoke (D34).
+    if (background) {
+      while (this.#foreground > 0 && !this.#ended) await new Promise((r) => setTimeout(r, 100));
+    } else {
+      this.#foreground++;
+    }
+    try {
+      return await this.relaySerial(functionName, args);
+    } finally {
+      if (!background) this.#foreground--;
+    }
+  }
+
+  private async relaySerial(functionName: string, args: readonly unknown[]): Promise<TransactionReceipt> {
     const prev = this.#relayTail;
     let release!: () => void;
     this.#relayTail = new Promise<void>((r) => (release = r));
@@ -262,17 +287,17 @@ export class OwnerSession {
   }
 
   /** Encrypts and appends one canonical entry document (v1 or v2) to a folder, creating the folder if needed. */
-  private async appendPlain(label: string, plaintext: Uint8Array): Promise<{ seq: bigint; txHash: Hex }> {
+  private async appendPlain(label: string, plaintext: Uint8Array, background = false): Promise<{ seq: bigint; txHash: Hex }> {
     {
       const nsId = this.nsIdOf(label);
       for (let attempt = 0; ; attempt++) {
         const ns = await this.reads.namespace(this.owner, nsId);
-        if (!ns.exists) await this.relay("createNamespace", [nsId]).catch((e) => {
+        if (!ns.exists) await this.relay("createNamespace", [nsId], background).catch((e) => {
           if (!(e instanceof EngramError && e.detail === "NamespaceExists")) throw e;
         });
         const envelope = await encryptEntry({ key: this.nsKey(label, ns.epoch), ctx: this.ctx, nsId: hexToBytes(nsId), epoch: ns.epoch, plaintext });
         try {
-          const receipt = await this.relay("appendAsOwner", [nsId, ns.epoch, toHex(envelope)]);
+          const receipt = await this.relay("appendAsOwner", [nsId, ns.epoch, toHex(envelope)], background);
           return { seq: seqFrom(this.#config.registry, receipt, this.owner, nsId), txHash: receipt.transactionHash };
         } catch (e) {
           if (!(e instanceof EngramError && e.detail === "WrongEpoch") || attempt >= 1) throw e; // rotated meanwhile
@@ -334,6 +359,7 @@ export class OwnerSession {
   async grant(label: string, agentId: bigint, opts: { scope: GrantScope; expiresInSec: number; includeHistory: boolean }) {
     return traced(this.log, "owner", "grant", { label, agentId, scope: opts.scope }, async () => {
       this.touch();
+      if (typeof label === "string" && label.startsWith("engram-")) fail("INPUT_INVALID", "engram-* folders are reserved and cannot be shared (D37)");
       const nsId = this.nsIdOf(label);
       assertAgentId(agentId);
       if (opts.scope !== "read" && opts.scope !== "readwrite") fail("INPUT_INVALID", "scope must be read or readwrite");
@@ -539,21 +565,64 @@ export class OwnerSession {
       if (!Number.isSafeInteger(opts.expiresInSec) || opts.expiresInSec <= 0 || opts.expiresInSec > MAX_EXPIRY_SEC) {
         fail("INPUT_INVALID", "expiresInSec must be 1..31536000 (365 days)");
       }
-      await this.freshCeremony(); // approving shares data: same prompt rule as grant (sdk.md "Session scoping")
-      const exp = this.#clock() + opts.expiresInSec * 1000;
-      return this.writePolicy({ agentId, origin, labels, scope: opts.scope, exp, active: true });
+      const ticket = ++this.#policyTicket;
+      return this.inPolicyOrder(async () => {
+        await this.freshCeremony(); // approving shares data: same prompt rule as grant (sdk.md "Session scoping")
+        const exp = this.#clock() + opts.expiresInSec * 1000;
+        const r = await this.writePolicy({ agentId, origin, labels, scope: opts.scope, exp, active: true });
+        // A later approval lifts an earlier revoke; an earlier one never lifts a later revoke (D36).
+        if ((this.#revokedAt.get(agentId.toString()) ?? -1) < ticket) this.#revokedAt.delete(agentId.toString());
+        return r;
+      });
     });
   }
 
+  /** Runs policy writes one at a time, in call order (D36). */
+  private inPolicyOrder<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.#policyTail.then(f, f);
+    this.#policyTail = run.catch(() => undefined);
+    return run;
+  }
+
   /** Withdraws an approval: the vault stops answering that agent. */
-  async disapprove(agentId: bigint) {
+  async disapprove(agentId: bigint): Promise<{ txHash?: Hex; pending?: true }> {
     return traced(this.log, "owner", "disapprove", { agentId }, async () => {
       this.touch();
       assertAgentId(agentId);
-      const p = (await this.loadPolicies(true)).get(agentId.toString()) ?? fail("INPUT_INVALID", `agent ${agentId} has no approval`);
-      const r = await this.writePolicy({ agentId, origin: p.origin, labels: p.labels, scope: p.scope, exp: p.exp, active: false });
-      return { txHash: r.txHash };
+      // Effective now, on this device, before any network call (D34): the vault stops answering this agent.
+      const ticket = ++this.#policyTicket;
+      this.#revokedAt.set(agentId.toString(), ticket);
+      return this.inPolicyOrder(async () => {
+        const p = (this.#policyCache?.byAgent.get(agentId.toString())) ?? (await this.loadPolicies(true)).get(agentId.toString());
+        if (!p) fail("INPUT_INVALID", `agent ${agentId} has no approval`);
+        const doc = { agentId, origin: p!.origin, labels: p!.labels, scope: p!.scope, exp: p!.exp, active: false };
+        try {
+          const r = await this.writePolicy(doc);
+          return { txHash: r.txHash };
+        } catch (e) {
+          if (e instanceof EngramError && e.code === "SESSION_ENDED") throw e;
+          this.log({ stage: "sdk", side: "owner", op: "disapprove", traceId: "-", ok: false, code: "REVOKE_PENDING", agentId: agentId.toString() });
+          this.retryRevoke(doc, 1);
+          return { pending: true as const };
+        }
+      });
     });
+  }
+
+  /** Keeps trying to record a revoke onchain (for other devices); this device already stopped answering. */
+  private retryRevoke(doc: Omit<PolicyView, "seq">, attempt: number) {
+    if (this.#ended || attempt > 10) return;
+    const t = setTimeout(() => {
+      void this.inPolicyOrder(async () => {
+        if (this.#ended) return;
+        try {
+          await this.writePolicy(doc);
+        } catch {
+          this.retryRevoke(doc, attempt + 1);
+        }
+      });
+    }, Math.min(60_000, 2000 * 2 ** (attempt - 1)));
+    (t as { unref?: () => void }).unref?.();
   }
 
   private async writePolicy(p: Omit<PolicyView, "seq">) {
@@ -592,10 +661,15 @@ export class OwnerSession {
     return byAgent;
   }
 
+  private withLocalRevokes(p: PolicyView | undefined): PolicyView | undefined {
+    return p && this.#revokedAt.has(p.agentId.toString()) ? { ...p, active: false } : p;
+  }
+
   async policies(): Promise<PolicyView[]> {
     return traced(this.log, "owner", "policies", {}, async () => {
       this.touch();
-      return [...(await this.loadPolicies(true)).values()];
+      await this.#policyTail; // reflect policy writes already requested
+      return [...(await this.loadPolicies(true)).values()].map((p) => this.withLocalRevokes(p)!);
     });
   }
 
@@ -603,11 +677,12 @@ export class OwnerSession {
   async approvalFor(agentId: bigint): Promise<PolicyView | undefined> {
     this.touch();
     assertAgentId(agentId);
-    return (await this.loadPolicies()).get(agentId.toString());
+    return this.withLocalRevokes((await this.loadPolicies()).get(agentId.toString()));
   }
 
   private async checkedPolicy(agentId: bigint, origin: string): Promise<PolicyView> {
     assertAgentId(agentId);
+    if (this.#revokedAt.has(agentId.toString())) fail("NOT_APPROVED", "this agent is not approved for this site");
     const p = (await this.loadPolicies()).get(agentId.toString());
     if (!p || !p.active || p.origin !== origin) fail("NOT_APPROVED", "this agent is not approved for this site");
     if (p!.exp <= this.#clock()) fail("EXPIRED", "this approval has expired");
@@ -646,9 +721,12 @@ export class OwnerSession {
         }
         for (const d of read.docs) {
           const x = d.doc;
-          if (x.v === 1) candidates.push({ kind: x.kind, text: x.text, by: "owner", t: x.t, seq: d.seq, label });
-          else if (x.kind !== "policy" && x.kind !== "log" && x.src.agent === me) candidates.push({ kind: x.kind, text: x.text, by: "self", t: x.t, seq: d.seq, label });
-          // proposals by other agents are never candidates (quarantine, disclosure.md D19)
+          if (x.v !== 1 && (x.kind === "policy" || x.kind === "log" || x.kind === "logs")) continue;
+          // Who wrote it: only the owner's own appends count as the owner's, and `src` is trusted only on those
+          // (D31, D32). Any agent's writes reach that agent alone (quarantine, D19).
+          const writer = d.byOwner ? (x.v === 1 ? "owner" : x.src.agent) : d.agentId.toString();
+          if (writer === "owner") candidates.push({ kind: x.kind, text: x.text, by: "owner", t: x.t, seq: d.seq, label });
+          else if (writer === me) candidates.push({ kind: x.kind, text: x.text, by: "self", t: x.t, seq: d.seq, label });
         }
       }
       const picked = selectCandidates(req.query, candidates, req.mode);
@@ -680,38 +758,76 @@ export class OwnerSession {
     });
   }
 
-  /** Appends a log entry in the background; failures are kept and retried with the next one (D27). */
+  /** Queues one read for the encrypted log. Written in batches every 10-20 s, never right after the read (D35). */
   private queueLog(l: Omit<LogView, "t" | "seq">) {
-    let bytes: Uint8Array;
-    try {
-      bytes = crypto(() =>
-        encodeEntryV2({
-          v: 2, t: this.#clock(), kind: "log", agent: l.agentId.toString(), origin: l.origin, q: l.q, mode: l.mode,
-          refs: l.refs.map((r) => ({ l: r.label, s: r.seq.toString() })), n: l.n, round: l.round,
-        }),
-      );
-    } catch {
-      return; // cannot happen for validated inputs; never fail the read over its log
-    }
-    const batch = [...this.#failedLogs.splice(0), bytes];
-    this.#logTail = this.#logTail.then(async () => {
-      for (let i = 0; i < batch.length; i++) {
-        if (this.#ended) return;
-        try {
-          await this.appendPlain(LOG_LABEL, batch[i]!);
-        } catch {
-          this.#failedLogs.push(...batch.slice(i));
-          this.log({ stage: "sdk", side: "owner", op: "log", traceId: "-", ok: false, code: "LOG_PENDING", pending: this.#failedLogs.length });
-          return;
-        }
-      }
+    this.#logItems.push({
+      t: this.#clock(), agent: l.agentId.toString(), origin: l.origin, q: l.q, mode: l.mode,
+      refs: l.refs.map((r) => ({ l: r.label, s: r.seq.toString() })), n: l.n, round: l.round,
     });
+    while (this.#logItems.length > LOG_QUEUE_MAX) {
+      this.#logItems.shift();
+      this.#logDropped++;
+    }
+    this.scheduleLogs();
   }
 
-  /** Resolves when queued log appends have been attempted. */
-  async flushLogs(): Promise<{ pending: number }> {
-    await this.#logTail;
-    return { pending: this.#failedLogs.length };
+  private scheduleLogs() {
+    if (this.#logTimer || this.#ended || !this.#logItems.length) return;
+    this.#logTimer = setTimeout(() => {
+      this.#logTimer = undefined;
+      void this.writeLogs();
+    }, 10_000 + Math.floor(Math.random() * 10_000));
+    (this.#logTimer as { unref?: () => void }).unref?.();
+  }
+
+  /** Packs queued items into as few `logs` entries as fit in 2048 bytes and appends them in the background. */
+  private writeLogs(): Promise<void> {
+    if (this.#logFlight) return this.#logFlight;
+    this.#logFlight = (async () => {
+      try {
+        while (this.#logItems.length && !this.#ended) {
+          let take = 0;
+          let bytes: Uint8Array | undefined;
+          for (let k = 1; k <= Math.min(20, this.#logItems.length); k++) {
+            let b: Uint8Array;
+            try {
+              b = crypto(() => encodeEntryV2({ v: 2, t: this.#clock(), kind: "logs", items: this.#logItems.slice(0, k) }));
+            } catch {
+              break;
+            }
+            if (b.length > LOG_ENTRY_MAX_BYTES) break;
+            take = k;
+            bytes = b;
+          }
+          if (!bytes) {
+            this.#logItems.shift(); // an unencodable item: drop it rather than block the log
+            this.#logDropped++;
+            continue;
+          }
+          try {
+            await this.appendPlain(LOG_LABEL, bytes, true);
+            this.#logItems.splice(0, take);
+          } catch {
+            this.log({ stage: "sdk", side: "owner", op: "log", traceId: "-", ok: false, code: "LOG_PENDING", pending: this.#logItems.length });
+            break;
+          }
+        }
+      } finally {
+        this.#logFlight = undefined;
+        this.scheduleLogs();
+      }
+    })();
+    return this.#logFlight;
+  }
+
+  /** Writes queued log items now. Returns how many are still waiting and how many were dropped (queue cap). */
+  async flushLogs(): Promise<{ pending: number; dropped: number }> {
+    if (this.#logTimer) clearTimeout(this.#logTimer);
+    this.#logTimer = undefined;
+    await this.writeLogs();
+    if (this.#logTimer) clearTimeout(this.#logTimer);
+    this.#logTimer = undefined;
+    return { pending: this.#logItems.length, dropped: this.#logDropped };
   }
 
   async disclosures(filter: { agentId?: bigint } = {}): Promise<LogView[]> {
@@ -720,11 +836,14 @@ export class OwnerSession {
       const out: LogView[] = [];
       for (const d of (await this.readDocs(LOG_LABEL)).docs) {
         const x = d.doc;
-        if (x.v !== 2 || x.kind !== "log" || !d.byOwner) continue;
-        if (filter.agentId !== undefined && x.agent !== filter.agentId.toString()) continue;
-        out.push({ agentId: BigInt(x.agent), origin: x.origin, q: x.q, mode: x.mode, refs: x.refs.map((r) => ({ label: r.l, seq: BigInt(r.s) })), n: x.n, round: x.round, t: x.t, seq: d.seq });
+        if (x.v !== 2 || !d.byOwner) continue;
+        const items: LogItem[] = x.kind === "log" ? [x] : x.kind === "logs" ? x.items : [];
+        for (const it of items) {
+          if (filter.agentId !== undefined && it.agent !== filter.agentId.toString()) continue;
+          out.push({ agentId: BigInt(it.agent), origin: it.origin, q: it.q, mode: it.mode, refs: it.refs.map((r) => ({ label: r.l, seq: BigInt(r.s) })), n: it.n, round: it.round, t: it.t, seq: d.seq });
+        }
       }
-      return out.sort((a, b) => (b.seq > a.seq ? 1 : -1));
+      return out.sort((a, b) => (b.seq > a.seq ? 1 : b.seq < a.seq ? -1 : b.t - a.t));
     });
   }
 
@@ -738,7 +857,8 @@ export class OwnerSession {
         const x = d.doc;
         const meta = { seq: d.seq, epoch: d.epoch, byOwner: d.byOwner, agentId: d.agentId, txHash: d.txHash };
         if (x.v === 1) entries.push({ kind: x.kind, text: x.text, t: x.t, ...meta });
-        else if (x.kind !== "policy" && x.kind !== "log") entries.push({ kind: x.kind, text: x.text, t: x.t, src: x.src, ...meta });
+        // `src` is trusted only on the owner's own appends; an agent-appended entry is credited to its writer (D32).
+        else if (x.kind !== "policy" && x.kind !== "log" && x.kind !== "logs") entries.push({ kind: x.kind, text: x.text, t: x.t, ...(d.byOwner ? { src: x.src } : {}), ...meta });
       }
       return { entries, skipped, complete: missingSeqs.length === 0, missingSeqs };
     });
@@ -756,6 +876,7 @@ export class OwnerSession {
   end() {
     if (this.#ended) return;
     this.#ended = true;
+    if (this.#logTimer) clearTimeout(this.#logTimer);
     this.#prf.fill(0);
     this.#signing.end();
   }

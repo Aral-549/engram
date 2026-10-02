@@ -3,10 +3,11 @@
 // writes memories as the agent. Hardened per BUGLOG G1-G8.
 import { EngramError, EngramAgent, exactOrigin, verifyAppSession, type AgentCard, type AppSessionProof, type EngramConfig, type Logger } from "@engram/sdk";
 import type { Account, Chain, Hex, Transport, WalletClient } from "viem";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
-export type SavedMemory = { kind: string; text: string; seq: string; txHash: Hex };
+export type SavedMemory = { kind: string; text: string; seq: string; txHash?: Hex };
 export type ChatBody = {
   reply?: string; saved: SavedMemory[]; accessRevoked: boolean; code?: string; message?: string;
   /** Disclosure mode: the page must ask the vault bridge, then POST the result to continue (contracts/disclosure.md D22). */
@@ -252,28 +253,39 @@ export function createAgentServer(opts: {
     convo: unknown[]; queue: Call[]; pending?: { id: string; callId: string; tool: "recall" | "remember"; args: Record<string, unknown> };
     round: number; writes: number; recalls: number; saved: SavedMemory[]; lastText: string; canWrite: boolean;
   };
+  // Continuations are encrypted and authenticated (AES-256-GCM over deflated JSON): the client can neither read
+  // the turn state (system prompt, counters) nor alter it (BUGLOG DA-9). 512 KB cap (DA-7).
   const CONTINUATION_TTL_MS = 120_000;
-  const MAX_CONTINUATION = 96 * 1024;
-  const mac = (payload: string) => createHmac("sha256", opts.continuationSecret!).update(payload).digest("base64url");
+  const MAX_CONTINUATION = 512 * 1024;
+  const sealKey = createHash("sha256").update("engram.continuation.v1").update(opts.continuationSecret ?? "").digest();
   const seal = (st: TurnState) => {
-    const payload = Buffer.from(JSON.stringify(st)).toString("base64url");
-    return `${payload}.${mac(payload)}`;
+    const iv = randomBytes(12);
+    const c = createCipheriv("aes-256-gcm", sealKey, iv);
+    const body = Buffer.concat([c.update(deflateRawSync(Buffer.from(JSON.stringify(st)))), c.final()]);
+    return Buffer.concat([iv, body, c.getAuthTag()]).toString("base64url");
   };
   function unseal(token: unknown): TurnState | undefined {
-    if (typeof token !== "string" || token.length > MAX_CONTINUATION * 2) return undefined;
-    const dot = token.lastIndexOf(".");
-    if (dot < 1) return undefined;
-    const payload = token.slice(0, dot);
-    const want = Buffer.from(mac(payload));
-    const got = Buffer.from(token.slice(dot + 1));
-    if (want.length !== got.length || !timingSafeEqual(want, got)) return undefined;
+    if (typeof token !== "string" || token.length < 40 || token.length > MAX_CONTINUATION || !/^[A-Za-z0-9_-]+$/.test(token)) return undefined;
     try {
-      const st = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as TurnState;
+      const raw = Buffer.from(token, "base64url");
+      const d = createDecipheriv("aes-256-gcm", sealKey, raw.subarray(0, 12));
+      d.setAuthTag(raw.subarray(raw.length - 16));
+      const plain = Buffer.concat([d.update(raw.subarray(12, raw.length - 16)), d.final()]);
+      const st = JSON.parse(inflateRawSync(plain, { maxOutputLength: 4 * MAX_CONTINUATION }).toString("utf8")) as TurnState;
       return st && st.v === 1 ? st : undefined;
     } catch {
       return undefined;
     }
   }
+  // Each pending step is accepted once per process (replays of a captured continuation are refused, DA-5).
+  const usedPending = new Map<string, number>();
+  const markUsed = (id: string, exp: number) => {
+    const now = clock();
+    for (const [k, e] of usedPending) if (e < now) usedPending.delete(k);
+    if (usedPending.has(id)) return false;
+    usedPending.set(id, exp);
+    return true;
+  };
   const cleanDisclosed = (v: unknown): DisclosedInput[] =>
     (Array.isArray(v) ? v : [])
       .filter((e): e is DisclosedInput => !!e && typeof e === "object" && typeof (e as DisclosedInput).kind === "string" && typeof (e as DisclosedInput).text === "string")
@@ -410,13 +422,23 @@ export function createAgentServer(opts: {
       emit("continue", st?.traceId ?? "-", Date.now(), { code: "BAD_CONTINUATION" });
       return bad();
     }
+    if (!markUsed(st.pending.id, st.exp)) {
+      emit("continue", st.traceId, Date.now(), { code: "BAD_CONTINUATION", replay: true });
+      return bad();
+    }
+    // Every model call counts toward the owner's and the global limits, continuations included (DA-5).
+    if (!admit(hits, [[ownerAddr.toLowerCase(), perOwner], ["*", global]], clock())) {
+      emit("continue", st.traceId, Date.now(), { code: "RATE_LIMITED" });
+      return { status: 429, body: { saved: st.saved, accessRevoked: false, code: "RATE_LIMITED", message: "too many messages; try again later" } };
+    }
     const p = st.pending;
     st.pending = undefined;
     let content: string;
     if (p.tool === "recall") {
       content = r.ok === true ? memoryBlock(cleanDisclosed(r.entries)) : JSON.stringify({ error: `the vault answered ${String(r.code ?? "no").slice(0, 32)}` });
-    } else if (r.ok === true && typeof r.seq === "string" && /^(0|[1-9][0-9]*)$/.test(r.seq) && typeof r.txHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(r.txHash)) {
-      st.saved.push({ kind: String(p.args.kind), text: String(p.args.text), seq: r.seq, txHash: r.txHash as Hex });
+    } else if (r.ok === true && typeof r.seq === "string" && /^(0|[1-9][0-9]{0,77})$/.test(r.seq) && (r.txHash === undefined || (typeof r.txHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(r.txHash)))) {
+      // Disclosure receipts carry an opaque number and no tx hash (D33); a tx hash, if sent, is passed through.
+      st.saved.push({ kind: String(p.args.kind), text: String(p.args.text), seq: r.seq, ...(typeof r.txHash === "string" ? { txHash: r.txHash as Hex } : {}) });
       content = JSON.stringify({ ok: true, seq: r.seq });
     } else {
       content = JSON.stringify({ error: "could not save" });

@@ -24,7 +24,8 @@ export type ConnectRequest = {
   mode: ConnectMode;
 };
 export type ConnectMode = "disclosure" | "offline";
-export type ConnectResult = { owner: Hex; granted: string[]; txHash: Hex; sessionProof?: AppSessionProof; mode?: ConnectMode };
+/** `txHash` is absent in disclosure mode: it would name the real owner onchain (disclosure.md D33). */
+export type ConnectResult = { owner: Hex; granted: string[]; txHash?: Hex; sessionProof?: AppSessionProof; mode?: ConnectMode };
 export type ConnectMessage = ({ ok: true } & ConnectResult) | { ok: false; code: string };
 /** ERC-8004 agent card (subset). */
 export type AgentCard = { name?: string; description?: string; image?: string; endpoints?: { name?: string; endpoint: string }[] };
@@ -89,7 +90,8 @@ export function connectEngram(opts: {
       if (!d || typeof d !== "object" || d.type !== CONNECT_MESSAGE_TYPE || d.v !== 1) return;
       // Malformed replies are ignored exactly like foreign ones (BUGLOG S7).
       const okShape =
-        d.ok === true && typeof d.owner === "string" && ADDRESS_RE.test(d.owner) && typeof d.txHash === "string" && TX_RE.test(d.txHash) &&
+        d.ok === true && typeof d.owner === "string" && ADDRESS_RE.test(d.owner) &&
+        (typeof d.txHash === "string" ? TX_RE.test(d.txHash) : d.mode === "disclosure") &&
         Array.isArray(d.granted) && d.granted.every((l) => typeof l === "string" && LABEL_RE.test(l));
       const failShape = d.ok === false && typeof d.code === "string" && d.code.length <= 64;
       if (!okShape && !failShape) return;
@@ -98,7 +100,7 @@ export function connectEngram(opts: {
         // The proof is passed through untouched: the app server verifies it (verifyAppSession), not the browser.
         const proof = d.sessionProof && typeof d.sessionProof === "object" ? (d.sessionProof as AppSessionProof) : undefined;
         const mode = d.mode === "disclosure" || d.mode === "offline" ? d.mode : undefined;
-        resolve({ owner: d.owner as Hex, granted: d.granted as string[], txHash: d.txHash as Hex, ...(proof ? { sessionProof: proof } : {}), ...(mode ? { mode } : {}) });
+        resolve({ owner: d.owner as Hex, granted: d.granted as string[], ...(typeof d.txHash === "string" ? { txHash: d.txHash as Hex } : {}), ...(proof ? { sessionProof: proof } : {}), ...(mode ? { mode } : {}) });
       } else {
         reject(new EngramError(d.code === "USER_CANCELLED" ? "USER_CANCELLED" : "RELAY_REJECTED", "the vault did not grant access", { detail: d.code as string }));
       }

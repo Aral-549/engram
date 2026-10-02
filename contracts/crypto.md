@@ -122,6 +122,10 @@ Same canonical, strict, 2048-byte rules as v1. Unknown keys are rejected.
 - `agent` and `s` (seq) are decimal strings: `^(0|[1-9][0-9]*)$`, value < 2^256. Labels follow the label rule above. Key order is exactly as written here.
 - log: `{"v":2,"t":<ms>,"kind":"log","agent":"<id>","origin":<origin>,"q":<0..200 cp>,"mode":"relevant"|"full"|"write","refs":[{"l":<label>,"s":"<seq>"}],"n":<int 0..20>,"round":<0..3>}` (refs <= 20)
 
+- logs (batch, disclosure.md D35): `{"v":2,"t":<ms>,"kind":"logs","items":[<1..20 log items>]}` where a log item is
+  `{"t":<ms>,"agent":"<id>","origin":<origin>,"q":<0..200 cp>,"mode":"relevant"|"full"|"write","refs":[...],"n":<0..20>,"round":<0..3>}`
+  (same field rules as `log`). Writers pack as many items as fit in 2048 bytes. Readers accept `log` and `logs`.
+
 | # | Input | Expected output | Notes |
 |---|---|---|---|
 | 17 | prf = 32 x `0x01`, `pairwise(7)`, `pairwise(8)` | equal vector V3 (Python reference); all differ from `accountKey` | independent impl |
@@ -129,6 +133,7 @@ Same canonical, strict, 2048-byte rules as v1. Unknown keys are rejected.
 | 19 | `parseAnyEntry` of each v2 example above | returns it; `parseEntry` of the same bytes -> `ENTRY_INVALID` | v1 untouched |
 | 20 | v2 memory without `src`; policy with `labels: []`, 9 labels, a duplicate label, or a reserved `engram-*` label; log with 21 refs or `n` > 20; policy with a non-exact origin; `agent` or `s` with a leading zero, a sign, or non-decimal; key order changed; unknown key | `ENTRY_INVALID` | strict, canonical |
 | 21 | `encodeEntryV2` of a 2049-byte document | `INPUT_INVALID` | size |
+| 22 | `logs` with 1 and 20 items round-trips; 0 items, 21 items, an item with an extra key or a bad field | round trip; `ENTRY_INVALID` for the bad ones | batch log |
 
 ## Explicitly out of scope
 - Running the WebAuthn ceremony -> sdk.md (Mera).

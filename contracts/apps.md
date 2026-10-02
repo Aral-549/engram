@@ -44,7 +44,7 @@ Both agent apps are thin Next.js apps over one tested package:
   no state: each request re-verifies the proof and reads memory fresh (no plaintext cached between requests).
 - **Request hardening (review 2026-10-01, BUGLOG G1):** `/api/session` and `/api/chat` accept only
   `content-type: application/json` (media type exactly, parameters like `charset` allowed) with an `Origin` header equal to `APP_ORIGIN`; bodies are read with a hard cap
-  (session 4 KB, chat 160 KB, chat/continue 256 KB: Disclosure mode carries disclosed entries and a continuation) whether or not `content-length` is sent. The cookie is `HttpOnly; SameSite=Strict;
+  (session 4 KB, chat 160 KB, chat/continue 640 KB: Disclosure mode carries disclosed entries and a continuation) whether or not `content-length` is sent. The cookie is `HttpOnly; SameSite=Strict;
   Path=/`, `Secure` when `APP_ORIGIN` is https, and holds only the canonical proof fields (<= 1 KB, else rejected).
   `APP_ORIGIN` must be an exact origin or the server refuses to start.
 - **Turn budget (G2):** per chat turn at most 3 tool rounds, 3 `remember` writes, and 2 `recall` calls; extra calls
@@ -136,8 +136,14 @@ Vault
 Agent server (`createAgentServer({ ..., mode: "disclosure", continuationSecret })`)
 - `chat` takes `disclosed` and `memory`. Disclosed entries go into the `<user_memory>` block with `by`.
   `recall` and `remember` tool calls return `{ pending, continuation }` instead of reading the chain.
-- `continuation` = base64url(JSON) + HMAC-SHA256 with `continuationSecret`. It holds the conversation so far,
-  round/write/recall counters, the owner, agentId, origin, a pending id and an expiry of 120 s. Size cap 96 KB.
+- `continuation` = base64url(AES-256-GCM(key = SHA-256("engram.continuation.v1" || continuationSecret), deflate(JSON))):
+  encrypted and authenticated, so a client can neither read (system prompt, counters) nor alter it (DA-9). It holds
+  the conversation so far, round/write/recall counters, the owner, agentId, origin, a pending id and an expiry of
+  120 s. Size cap 512 KB; the continue route accepts 640 KB (DA-7).
+- Each pending id is accepted once per server process (replays get `BAD_CONTINUATION`), and every `continue` counts
+  toward the per-owner and global chat limits (DA-5).
+- In disclosure mode a `remember` receipt is `{ ok: true }`. A `txHash`, if one is sent, is passed through but never
+  required (D33).
 - No onchain grant check in this mode, so A12 (`NO_GRANT`) does not apply; cost is bounded by the A13/A18 rate
   limits. This is a known limitation: a self-signed proof can chat without memory.
 
@@ -147,6 +153,9 @@ Agent server (`createAgentServer({ ..., mode: "disclosure", continuationSecret }
 | A22 | model calls `remember` | `{ pending: { tool: "remember", args } }`; after `continue` with `{ ok, seq, txHash }`, `saved` lists it | owner-signed write |
 | A23 | tampered, expired, cross-owner or replayed-after-expiry continuation | 400 `BAD_CONTINUATION`, model not called | disclosure.md D24 |
 | A24 | `memory: "revoked"` | the model is told access was revoked; `accessRevoked: true`; no tool round-trips | |
+| A25 | one continuation replayed twice; `continue` beyond the owner's hourly limit | the second gets 400 `BAD_CONTINUATION`; over the limit gets 429 | DA-5 |
+| A26 | a 20-turn conversation of 3000-character messages plus 8 disclosed entries, then a tool call | `pending` with a continuation; no 413 | DA-7 |
+| A27 | decode a continuation without the secret | no readable JSON, no system prompt text | DA-9 |
 | V6 | `/bridge` framed by an unapproved origin | shows "Not approved for this site"; answers nothing | disclosure.md D9 |
 | V7 | any vault page other than `/bridge` framed | blocked by `frame-ancestors 'none'` | |
 

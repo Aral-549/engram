@@ -7,7 +7,7 @@ import { Monogram } from "@/components/Monogram";
 import { Seal } from "@/components/Seal";
 import { Words } from "@/components/Words";
 
-type Msg = { role: "user" | "assistant"; content: string; saved?: { text: string; txHash: string }[] };
+type Msg = { role: "user" | "assistant"; content: string; saved?: { text: string; txHash?: string }[] };
 const P = persona(process.env.NEXT_PUBLIC_AGENT_PERSONA);
 const VAULT = process.env.NEXT_PUBLIC_VAULT_URL ?? "http://localhost:3100";
 const AGENT_ID = BigInt(process.env.NEXT_PUBLIC_AGENT_ID ?? "0");
@@ -16,7 +16,7 @@ const FLAG = `engram-connected-${P.id}`; // UI convenience only; the httpOnly co
 // Disclosure mode (default): this page never gets a key. It asks the user's vault, framed below, for each answer.
 const MODE: "disclosure" | "offline" = process.env.NEXT_PUBLIC_AGENT_MODE === "offline" ? "offline" : "disclosure";
 type Pending = { id: string; tool: "recall" | "remember"; args: Record<string, unknown> };
-type ChatReply = { reply?: string; saved?: { text: string; txHash: string }[]; accessRevoked?: boolean; message?: string; code?: string; pending?: Pending; continuation?: string };
+type ChatReply = { reply?: string; saved?: { text: string; txHash?: string }[]; accessRevoked?: boolean; message?: string; code?: string; pending?: Pending; continuation?: string };
 const post = (url: string, body: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 export default function Page() {
@@ -76,7 +76,7 @@ export default function Page() {
           result = { id: p.id, ok: true, entries: r.entries };
         } else {
           const w = await bridge.current!.propose({ kind: p.args.kind as "fact", text: String(p.args.text ?? "") });
-          result = { id: p.id, ok: true, seq: w.seq.toString(), txHash: w.txHash };
+          result = { id: p.id, ok: true, seq: w.seq.toString() }; // an opaque receipt: nothing that names you onchain
         }
       } catch (e) {
         result = { id: p.id, ok: false, code: (e as { code?: string }).code ?? "BAD_REQUEST" };
@@ -243,8 +243,9 @@ export default function Page() {
                     <div className="stagger mt-2 flex flex-wrap gap-2">
                       {m.saved.map((s, k) => (
                         <a
-                          key={s.txHash}
-                          href={`${EXPLORER}${s.txHash}`}
+                          key={`${s.txHash ?? s.text}-${k}`}
+                          // Disclosure mode: the app never learns the tx (it would name you); the chip opens your vault.
+                          href={s.txHash ? `${EXPLORER}${s.txHash}` : VAULT}
                           target="_blank"
                           rel="noreferrer"
                           style={{ ["--i" as string]: k, ["--d" as string]: "500ms" }}

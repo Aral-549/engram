@@ -11,7 +11,10 @@ export type LogEntry = {
   v: 2; t: number; kind: "log"; agent: string; origin: string; q: string; mode: "relevant" | "full" | "write";
   refs: { l: string; s: string }[]; n: number; round: number;
 };
-export type EntryV2 = MemoryEntryV2 | PolicyEntry | LogEntry;
+/** One read in a batched log (disclosure.md D35): the log fields without v/kind, with their own timestamp. */
+export type LogItem = Omit<LogEntry, "v" | "kind">;
+export type LogsEntry = { v: 2; t: number; kind: "logs"; items: LogItem[] };
+export type EntryV2 = MemoryEntryV2 | PolicyEntry | LogEntry | LogsEntry;
 export type AnyEntry = Entry | EntryV2;
 
 const MAX_BYTES = 2048;
@@ -71,8 +74,32 @@ function canonicalV2(d: unknown): EntryV2 | string {
     if (typeof s.active !== "boolean") return "active must be a boolean";
     return { v: 2, t: s.t as number, kind: "policy", agent: s.agent as string, origin: s.origin as string, labels: labels as string[], scope: s.scope, exp: s.exp as number, active: s.active };
   }
+  if (s.kind === "logs") {
+    if (!sameKeys(s, ["v", "t", "kind", "items"])) return "logs has wrong keys";
+    const items = Array.isArray(s.items) ? [...s.items] : null;
+    if (!items || items.length < 1 || items.length > 20) return "items must be 1..20 log items";
+    const out: LogItem[] = [];
+    for (const it of items) {
+      if (!isObj(it) || !sameKeys(it, ["t", "agent", "origin", "q", "mode", "refs", "n", "round"])) return "each log item has wrong keys";
+      const c = logFields({ ...it });
+      if (typeof c === "string") return c;
+      out.push(c);
+    }
+    return { v: 2, t: s.t as number, kind: "logs", items: out };
+  }
   if (s.kind === "log") {
     if (!sameKeys(s, ["v", "t", "kind", "agent", "origin", "q", "mode", "refs", "n", "round"])) return "log has wrong keys";
+    const c = logFields(s);
+    if (typeof c === "string") return c;
+    return { v: 2, t: c.t, kind: "log", agent: c.agent, origin: c.origin, q: c.q, mode: c.mode, refs: c.refs, n: c.n, round: c.round }; // spec key order
+  }
+  return "unknown v2 kind";
+}
+
+/** Shared field rules of a log record (`log` entries and `logs` items), rebuilt in canonical key order. */
+function logFields(s: Doc): LogItem | string {
+  {
+    if (!nonNegInt(s.t)) return "t must be a non-negative integer (unix ms)";
     if (!decimal(s.agent)) return "agent must be a decimal uint256";
     if (!exactOrigin(s.origin)) return "origin must be an exact http(s) origin";
     if (!text(s.q, 0, 200)) return "q must be 0..200 well-formed code points";
@@ -87,9 +114,8 @@ function canonicalV2(d: unknown): EntryV2 | string {
     }
     if (!nonNegInt(s.n, 20)) return "n must be an integer 0..20";
     if (!nonNegInt(s.round, 3)) return "round must be an integer 0..3";
-    return { v: 2, t: s.t as number, kind: "log", agent: s.agent as string, origin: s.origin as string, q: s.q as string, mode: s.mode, refs: out, n: s.n as number, round: s.round as number };
+    return { t: s.t as number, agent: s.agent as string, origin: s.origin as string, q: s.q as string, mode: s.mode as LogItem["mode"], refs: out, n: s.n as number, round: s.round as number };
   }
-  return "unknown v2 kind";
 }
 
 /** Canonical bytes of a v2 document. Throws INPUT_INVALID for anything parseAnyEntry would reject. */

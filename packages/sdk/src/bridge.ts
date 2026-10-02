@@ -4,11 +4,11 @@
 import { EngramError, fail } from "./errors.js";
 import type { OwnerSession } from "./owner.js";
 import type { DisclosedEntry, DisclosureMode } from "./select.js";
-import type { Hex } from "viem";
 
 const REQ = "engram:bridge:req";
 const RES = "engram:bridge:res";
 const STATUS = "engram:bridge:status";
+const HELLO = "engram:bridge:hello";
 const OPS = ["disclose", "propose", "status"];
 
 type Target = { postMessage(message: unknown, targetOrigin: string): void };
@@ -38,6 +38,7 @@ export function startBridge(opts: {
     }
   };
   const w = opts.window;
+  let receipts = 0; // opaque per-agent receipt numbers: never the onchain seq or tx (D33)
   const onMessage: Listener = (e) => {
     if (e.source !== w.parent) return; // only the page that embeds us (D10)
     const d = e.data;
@@ -60,7 +61,7 @@ export function startBridge(opts: {
         }
         const r = await s.propose(opts.agentId, origin, { kind: a.kind as never, text: a.text as string, label: a.label as string | undefined });
         emit({ op: "propose", ok: true, text: String(a.text), seq: r.seq });
-        return reply({ ok: true, seq: r.seq.toString(), txHash: r.txHash });
+        return reply({ ok: true, receipt: String(++receipts) });
       } catch (err) {
         const code = err instanceof EngramError ? (err.code === "SESSION_EXPIRED" || err.code === "SESSION_ENDED" ? "VAULT_LOCKED" : err.code) : "BAD_REQUEST";
         if (d.op !== "status") emit({ op: d.op as "disclose" | "propose", ok: false, code });
@@ -77,7 +78,9 @@ export function startBridge(opts: {
     const policy = await s.approvalFor(opts.agentId).catch(() => undefined);
     if (policy?.active) w.parent.postMessage({ type: STATUS, v: 1, state: "ready" }, policy.origin);
   }
-  void refresh();
+  // A locked bridge cannot know the approved origin; it says hello (no data) so the app knows it is listening (D38).
+  if (!opts.session()) w.parent.postMessage({ type: HELLO, v: 1 }, "*");
+  else void refresh();
   return { stop: () => w.removeEventListener("message", onMessage), refresh };
 }
 
@@ -87,7 +90,8 @@ export type BridgeState = "unknown" | "locked" | "ready";
 export type VaultBridge = {
   status(): BridgeState;
   disclose(query: string, opts?: { mode?: DisclosureMode; round?: number }): Promise<{ entries: DisclosedEntry[]; mode: DisclosureMode }>;
-  propose(entry: { kind: "fact" | "preference" | "note"; text: string; label?: string }): Promise<{ seq: bigint; txHash: Hex }>;
+  /** Resolves an opaque per-agent receipt number as `seq` (never the onchain seq, never a tx hash: D33). */
+  propose(entry: { kind: "fact" | "preference" | "note"; text: string; label?: string }): Promise<{ seq: bigint }>;
   onStatus(cb: (s: BridgeState) => void): () => void;
   close(): void;
 };
@@ -113,6 +117,7 @@ export function openVaultBridge(opts: {
   let frame = opts.frame;
   let iframe: HTMLIFrameElement | undefined;
   let loaded: Promise<void> = Promise.resolve();
+  let readyNow: () => void = () => {};
   if (!frame) {
     if (!opts.mount || typeof document === "undefined") return fail("INPUT_INVALID", "mount is required in the browser");
     iframe = document.createElement("iframe");
@@ -120,7 +125,11 @@ export function openVaultBridge(opts: {
     iframe.allow = "publickey-credentials-get *; publickey-credentials-create *";
     iframe.title = "Engram vault";
     iframe.className = "engram-bridge";
-    loaded = new Promise((r) => iframe!.addEventListener("load", () => r(), { once: true }));
+    // First request only after the vault says hello/status, or 2 s after load (its listener attaches on hydration, D38).
+    loaded = new Promise((r) => {
+      readyNow = r;
+      iframe!.addEventListener("load", () => setTimeout(r, 2000), { once: true });
+    });
     opts.mount.appendChild(iframe);
     frame = iframe;
   }
@@ -137,7 +146,14 @@ export function openVaultBridge(opts: {
     if (e.origin !== vaultOrigin || !frame || e.source !== frame.contentWindow) return;
     const d = e.data;
     if (!isObj(d) || d.v !== 1) return;
-    if (d.type === STATUS && d.state === "ready") return setState("ready");
+    if (d.type === HELLO) {
+      readyNow();
+      return setState("locked");
+    }
+    if (d.type === STATUS && d.state === "ready") {
+      readyNow();
+      return setState("ready");
+    }
     if (d.type !== RES || typeof d.id !== "string") return;
     const p = pending.get(d.id);
     if (!p) return;
@@ -181,8 +197,8 @@ export function openVaultBridge(opts: {
     },
     async propose(entry) {
       const r = await call("propose", entry);
-      if (typeof r.seq !== "string" || !/^(0|[1-9][0-9]*)$/.test(r.seq) || typeof r.txHash !== "string") throw new EngramError("BAD_REQUEST", "malformed vault reply");
-      return { seq: BigInt(r.seq), txHash: r.txHash as Hex };
+      if (typeof r.receipt !== "string" || !/^[1-9][0-9]{0,15}$/.test(r.receipt)) throw new EngramError("BAD_REQUEST", "malformed vault reply");
+      return { seq: BigInt(r.receipt) };
     },
     onStatus(cb) {
       watchers.add(cb);

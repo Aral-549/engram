@@ -229,3 +229,19 @@ resolved -- it's just hidden until the next rewrite.
 - **Stage/module:** sdk `OwnerSession.loadPolicies`
 - **Regression case added:** `tests/golden/disclosure/disclosure.revoke-lag.golden.test.ts` -- D30
 - **Status:** fixed
+
+## 2026-10-02 -- DA-1..DA-9: Disclosure-mode adversarial review (commit 4871ef4)
+Found by a separate adversarial pass (probes in tests/adversarial/disclosure/ and tests/adversarial/agent-kit/agent-kit.disclosure.adversarial.test.ts).
+- **DA-1 (high):** an offline agent's v1 `appendAsAgent` entry was disclosed to other agents as `by: "owner"` (quarantine bypass, cross-agent poisoning). Root cause: v1 candidates ignored `byOwner`. Case D31.
+- **DA-2 (high):** an agent-appended v2 entry could forge `src.agent`, impersonating another agent in disclosures and the ledger. Root cause: `src` trusted without `byOwner`. Case D32.
+- **DA-3 (high):** the `propose` receipt and the disclosure connect reply carried a txHash whose `relay(owner, ...)` calldata names the real owner, defeating pairwise ids. Case D33.
+- **DA-4 (high):** one log relay per read let an approved agent drain the owner's relay budget and block revoke. Case D34, D35.
+- **DA-5 (medium):** `continue` was not rate-limited and continuations could be replayed for 120 s. Case A25.
+- **DA-6 (medium):** concurrent approve/disapprove could leave the agent approved. Case D36.
+- **DA-7 (medium):** 96 KB continuation cap made mid-length chats lose tools (413). Case A26.
+- **DA-8 (medium):** a log write right after each read let a single agent link its pairwise id to the owner by timing. Mitigated (batched, delayed logs), not eliminated. Case D35.
+- **DA-9 (low):** continuations were readable base64 (system prompt, state). Case A27.
+- Gaps fixed alongside: unbounded log queue (D35), lost first bridge request before hydration (D38), reserved labels in grant and custom folders (D37).
+- **Stage/module:** sdk owner/bridge/connect, crypto entry2, agent-kit disclosure engine, vault, agent app
+- **Regression cases added:** `tests/golden/disclosure/disclosure.review.golden.test.ts`, `tests/golden/crypto/crypto.v2-logs.golden.test.ts`, `tests/golden/agent-kit/agent-kit.disclosure-review.golden.test.ts`
+- **Status:** fixed (DA-8 mitigated: logs batched and delayed 10-20 s; timing linkability reduced, not eliminated)

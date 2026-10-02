@@ -42,7 +42,8 @@ Design rationale, transport spike and threat model: [`docs/design/disclosure.md`
   tx, epoch, label or timestamps are disclosed.
 - `disclose` reply: `{ id, ok: true, entries: DisclosedEntry[], mode }`, or `{ id, ok: false, code }` with
   `code`: `VAULT_LOCKED`, `NOT_APPROVED`, `EXPIRED`, `BAD_REQUEST` or `RATE_LIMITED`.
-- `propose` reply: `{ id, ok: true, seq, txHash }`, or `{ id, ok: false, code }` (also `READ_ONLY`, `QUOTA`).
+- `propose` reply: `{ id, ok: true, receipt }` (opaque per-agent counter), or `{ id, ok: false, code }` (also `READ_ONLY`,
+  `QUOTA`). No tx hash and no onchain seq (D33). The app client exposes the receipt as `seq` for compatibility.
 - Agent server: `{ reply, saved }`, or `{ pending: { id, tool: "recall" | "remember", args }, continuation }`.
 - Log entry (encrypted, owner-only): `{ agent, origin, q, mode, refs: [{l, s}], n, round }`.
 
@@ -68,7 +69,7 @@ Design rationale, transport spike and threat model: [`docs/design/disclosure.md`
 ## Behavior cases (input -> expected output)
 | # | Input | Expected output | Notes |
 |---|-------|------------------|-------|
-| D1 | connect popup, mode disclosure, approve `preferences` read for agent 7 at `https://app.x` | one relayed append to `engram-policy` (policy entry); reply `{ owner: pairwise(7), granted: ["preferences"], txHash, sessionProof, mode: "disclosure" }`; **no** `grant` call onchain | no key leaves the vault |
+| D1 | connect popup, mode disclosure, approve `preferences` read for agent 7 at `https://app.x` | one relayed append to `engram-policy` (policy entry); reply `{ owner: pairwise(7), granted: ["preferences"], sessionProof, mode: "disclosure" }` (no `txHash`, D33); **no** `grant` call onchain | no key leaves the vault |
 | D2 | `sessionProof` from D1 | verifies with `verifyAppSession` and recovers `pairwise(7)`, not the owner address | pseudonym |
 | D3 | same passkey on a second device, approve agent 7 again | identical `pairwise(7)` address | stable |
 | D4 | `pairwise(7)` vs `pairwise(8)` vs owner address | all three different; no onchain tx ever has `pairwise(*)` as sender or argument | unlinkable |
@@ -98,6 +99,14 @@ Design rationale, transport spike and threat model: [`docs/design/disclosure.md`
 | D28 | the agent page draws a fake vault UI instead of the real iframe | it cannot unlock: the passkey prompt is bound to the vault rpId, and a fake can obtain no PRF; it can only lie about reads, which the main vault log contradicts | see design note |
 | D29 | a folder read during `disclose` is incomplete (the indexer trails the chain, e.g. right after a `propose`) | the vault re-reads for up to ~3 s until complete, then answers with what it has | same rule as apps.md A10 |
 | D30 | the owner revokes on this device; more than 3 s later the policy cache refreshes from a source that has not indexed the revoke yet | `NOT_APPROVED`: a refresh never replaces a cached policy with an older one (higher `seq` wins), and an incomplete policy folder is re-read briefly | revocation is never undone by lag (BUGLOG D-3) |
+| D31 | an offline (key-grant) agent appends a v1 entry with `appendAsAgent`; another agent asks | not returned to the other agent; returned to the writing agent itself as `by: "self"`; never `by: "owner"`. Only entries the owner's own account appended count as the owner's | quarantine covers every agent write (BUGLOG DA-1) |
+| D32 | an agent appends a raw v2 memory claiming `src.agent` of another agent | `src` is trusted only on owner-appended entries; otherwise the entry counts as written by the appending agent (chain `agentId`) and the ledger credits that agent | provenance cannot be forged (DA-2) |
+| D33 | anything the agent page receives: connect reply, `propose` reply, `disclose` reply | never a transaction hash, the owner address, a namespace id or a seq that names the owner onchain. `propose` returns `{ ok: true, receipt }`, where `receipt` is an opaque per-agent counter assigned by the vault, not the onchain seq; the disclosure connect reply has no `txHash` | pairwise unlinkability (DA-3) |
+| D34 | an approved agent floods `disclose`; the owner then revokes | revoke takes effect on this device at once, before any network call; its onchain write is never queued behind background log writes; if the write fails, `disapprove` resolves `{ pending: true }` and keeps retrying in the background | revoke cannot be blocked (DA-4) |
+| D35 | the read log | appended in batches (`logs` entries, crypto.md) at most once every 10 s with a random 0-10 s delay, so a single read does not produce its own onchain write at a predictable moment; at most 500 items wait in memory (oldest dropped, counted) | timing linkability reduced, not eliminated (DA-8) |
+| D36 | `approve` and `disapprove` for one agent called concurrently | applied in call order; the last call wins | DA-6 |
+| D37 | `grant`, `approve`, or a custom folder named `engram-*` | `INPUT_INVALID` | reserved folders |
+| D38 | the bridge page loads after the app has started waiting | a bridge that starts locked posts `{ type: "engram:bridge:hello", v: 1 }` (no data) to its parent (an unlocked one sends its status to the approved origin); the app sends its first request only after hello or status, or after load plus 2 s | no lost first request |
 
 ## Edge cases that must be covered
 - An unlocked bridge idle for 15 minutes locks itself (`SESSION_IDLE_MS`) and answers `VAULT_LOCKED`.

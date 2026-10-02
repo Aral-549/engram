@@ -12,7 +12,7 @@ type Session = Pick<OwnerSession, "recall" | "remember"> & Partial<Pick<OwnerSes
 export type DiscoveredNamespace = { label: string; entries: RecalledAnyEntry[]; complete: boolean; skipped: number; custom: boolean };
 
 export function isValidLabel(label: string): boolean {
-  return LABEL_RE.test(label) && label !== INDEX_LABEL;
+  return LABEL_RE.test(label) && !label.startsWith("engram-"); // reserved folders (disclosure.md D37)
 }
 
 async function customLabels(session: Session): Promise<string[]> {

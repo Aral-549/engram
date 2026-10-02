@@ -71,7 +71,8 @@ function Consent() {
         setPhase("review");
         return;
       }
-      reply({ ok: true, owner: r.pairwiseOwner, granted: req.labels, txHash: r.txHash, sessionProof: proof, mode: "disclosure" });
+      // No txHash: the policy tx's calldata names your real address, which the app must never learn (D33).
+      reply({ ok: true, owner: r.pairwiseOwner, granted: req.labels, sessionProof: proof, mode: "disclosure" });
       setPhase("done");
       setTimeout(() => window.close(), 1400);
       return;

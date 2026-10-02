@@ -34,7 +34,8 @@ test("Sage: proposals are saved by the vault, and a full read is logged", async 
   await page.getByRole("button", { name: "Send" }).click();
   const chip = page.getByRole("link", { name: "saved to your memory: I am vegetarian" });
   await expect(chip).toBeVisible({ timeout: 90_000 });
-  await expect(chip).toHaveAttribute("href", /monadvision\.com\/tx\/0x[0-9a-f]{64}/);
+  // Disclosure mode: the app never gets the tx (it names the owner, D33); the chip opens the user's own vault.
+  await expect(chip).toHaveAttribute("href", /^http:\/\/localhost:3100/);
   await expect(page.getByRole("link", { name: "saved to your memory: I am allergic to peanuts" })).toBeVisible();
   await expect(strip.getByText(/Saved for you: I am/)).toBeVisible();
 
