@@ -31,6 +31,7 @@ import { decodeEventLog, decodeFunctionData, encodeFunctionData, hexToBytes, toH
 import { privateKeyToAccount } from "viem/accounts";
 import type { LogItem } from "@engram/crypto";
 import { selectCandidates, type Candidate, type DisclosedEntry, type DisclosureMode } from "./select.js";
+import { looksLikeInstruction } from "./instruction.js";
 import { memoryRegistryAbi } from "./abi.js";
 import { chainReads } from "./chain.js";
 import { clientsFor, loggerOf, type EngramConfig } from "./config.js";
@@ -52,6 +53,7 @@ export type GrantScope = "read" | "readwrite";
 // Disclosure mode (contracts/disclosure.md). Reserved folders hold the owner's own encrypted bookkeeping.
 export const POLICY_LABEL = "engram-policy";
 export const LOG_LABEL = "engram-log";
+export const REVIEW_LABEL = "engram-review";
 export const POLICY_CACHE_MS = 3000;
 const DISCLOSE_LIMIT = { max: 60, windowMs: 10 * 60 * 1000 };
 const PROPOSE_LIMIT = { max: 20, windowMs: 24 * 60 * 60 * 1000 };
@@ -65,7 +67,15 @@ export type LogView = {
   agentId: bigint; origin: string; q: string; mode: "relevant" | "full" | "write"; refs: { label: string; seq: bigint }[];
   n: number; round: number; t: number; seq: bigint;
 };
-export type RecalledAnyEntry = { kind: string; text: string; t: number; src?: { agent: string }; seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
+export type RecalledAnyEntry = {
+  kind: string; text: string; t: number; src?: { agent: string }; seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex;
+  /** On agent proposals (contracts/provenance.md). */
+  review?: "pending" | "confirmed" | "rejected";
+  /** On the owner's confirmed copy of a proposal: the proposing agent. */
+  confirmedFrom?: string;
+};
+export type Proposal = { label: string; seq: bigint; kind: string; text: string; t: number; agentId: bigint; txHash: Hex; flagged: boolean };
+type ReviewView = { action: "confirm" | "reject"; agent: string; copy?: string; seq: bigint };
 type Doc = { doc: AnyEntry; seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
 export type RecalledEntry = Entry & { seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
 export type RecallResult = { entries: RecalledEntry[]; skipped: number; complete: boolean; missingSeqs: bigint[] };
@@ -151,6 +161,8 @@ export class OwnerSession {
   #policyTail: Promise<unknown> = Promise.resolve();
   #policyTicket = 0;
   readonly #revokedAt = new Map<string, number>();
+  // Owner reviews of agent proposals, keyed "label:seq" (provenance.md). Merged like policies: newer seq wins.
+  #reviewCache: { at: number; byTarget: Map<string, ReviewView> } | undefined;
   readonly #pairwiseAddr = new Map<string, Hex>();
   #lastActivity: number;
   #lastCeremony: number;
@@ -218,7 +230,7 @@ export class OwnerSession {
 
   /**
    * Signs and relays one owner call, then verifies the effect: the transaction must be a successful
-   * `relay(...)` to the registry carrying exactly this signed request (BUGLOG S2). Re-signs once if another
+   * `relay(...)` to the registry carrying exactly this signed request (BUGLOG S2). Re-signs up to 4 times (with jitter) if another
    * tab consumed the nonce first.
    */
   private async relay(functionName: string, args: readonly unknown[], background = false): Promise<TransactionReceipt> {
@@ -273,7 +285,10 @@ export class OwnerSession {
         return receipt;
       } catch (e) {
         const stale = e instanceof EngramError && (e.detail === "BAD_SIGNATURE" || e.detail === "BadSignature");
-        if (!stale || attempt >= 1) throw e;
+        // Another session of this owner (a vault tab, a bridge strip) took the nonce: re-sign with a fresh one, with
+        // a random wait so the sessions stop colliding (BUGLOG DP-1).
+        if (!stale || attempt >= 4) throw e;
+        await new Promise((r) => setTimeout(r, 150 + Math.floor(Math.random() * 450)));
       }
     }
   }
@@ -712,6 +727,7 @@ export class OwnerSession {
       if (!this.hit(this.#discloseHits, req.agentId.toString(), DISCLOSE_LIMIT)) fail("RATE_LIMITED", "too many reads by this agent; try again in a few minutes");
       const me = req.agentId.toString();
       const candidates: Candidate[] = [];
+      const reviews = await this.loadReviews();
       let lagBudget = 6; // the indexer can trail the chain by ~1 s: re-read briefly, once per call (D29)
       for (const label of policy.labels) {
         let read = await this.readDocs(label);
@@ -720,13 +736,14 @@ export class OwnerSession {
           read = await this.readDocs(label);
         }
         for (const d of read.docs) {
-          const x = d.doc;
-          if (x.v !== 1 && (x.kind === "policy" || x.kind === "log" || x.kind === "logs")) continue;
-          // Who wrote it: only the owner's own appends count as the owner's, and `src` is trusted only on those
-          // (D31, D32). Any agent's writes reach that agent alone (quarantine, D19).
-          const writer = d.byOwner ? (x.v === 1 ? "owner" : x.src.agent) : d.agentId.toString();
-          if (writer === "owner") candidates.push({ kind: x.kind, text: x.text, by: "owner", t: x.t, seq: d.seq, label });
-          else if (writer === me) candidates.push({ kind: x.kind, text: x.text, by: "self", t: x.t, seq: d.seq, label });
+          const w = writerOf(d);
+          if (!w) continue;
+          const x = d.doc as { kind: string; text: string; t: number };
+          // Only the owner's own appends count as the owner's; `src` is trusted only on those (D31, D32). Any agent's
+          // writes reach that agent alone until the owner reviews them: confirmed ones live on as the owner's copy,
+          // rejected ones are gone (quarantine, D19; provenance.md P3, P4, P6).
+          if (w === "owner") candidates.push({ kind: x.kind, text: x.text, by: "owner", t: x.t, seq: d.seq, label });
+          else if (w === me && !reviews.has(`${label}:${d.seq}`)) candidates.push({ kind: x.kind, text: x.text, by: "self", t: x.t, seq: d.seq, label });
         }
       }
       const picked = selectCandidates(req.query, candidates, req.mode);
@@ -852,15 +869,139 @@ export class OwnerSession {
     return traced(this.log, "owner", "recallAll", { label }, async () => {
       this.touch();
       const { docs, skipped, missingSeqs } = await this.readDocs(label);
+      const reviews = label.startsWith("engram-") ? new Map<string, ReviewView>() : await this.loadReviews();
+      const copies = new Map<string, string>();
+      for (const [k, r] of reviews) if (r.action === "confirm" && k.startsWith(`${label}:`)) copies.set(r.copy!, r.agent);
       const entries: RecalledAnyEntry[] = [];
       for (const d of docs) {
-        const x = d.doc;
+        const w = writerOf(d);
+        if (!w) continue;
+        const x = d.doc as { kind: string; text: string; t: number; src?: { agent: string } };
         const meta = { seq: d.seq, epoch: d.epoch, byOwner: d.byOwner, agentId: d.agentId, txHash: d.txHash };
-        if (x.v === 1) entries.push({ kind: x.kind, text: x.text, t: x.t, ...meta });
+        if (w === "owner") {
+          const from = copies.get(d.seq.toString());
+          entries.push({ kind: x.kind, text: x.text, t: x.t, ...meta, ...(from ? { confirmedFrom: from } : {}) });
+          continue;
+        }
+        const r = reviews.get(`${label}:${d.seq}`);
+        const review = !r ? "pending" : r.action === "confirm" ? "confirmed" : "rejected";
         // `src` is trusted only on the owner's own appends; an agent-appended entry is credited to its writer (D32).
-        else if (x.kind !== "policy" && x.kind !== "log" && x.kind !== "logs") entries.push({ kind: x.kind, text: x.text, t: x.t, ...(d.byOwner ? { src: x.src } : {}), ...meta });
+        entries.push({ kind: x.kind, text: x.text, t: x.t, ...(d.byOwner && x.src ? { src: x.src } : {}), ...meta, review });
       }
       return { entries, skipped, complete: missingSeqs.length === 0, missingSeqs };
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------- Review (provenance.md)
+
+  /** Latest owner review per proposal, re-read when older than 3 s; reviews made here are never lost to lag (P13). */
+  private async loadReviews(force = false): Promise<Map<string, ReviewView>> {
+    const now = this.#clock();
+    const c = this.#reviewCache;
+    if (!force && c && now - c.at >= 0 && now - c.at <= POLICY_CACHE_MS) return c.byTarget;
+    let read = await this.readDocs(REVIEW_LABEL);
+    for (let i = 0; i < 6 && read.missingSeqs.length; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      read = await this.readDocs(REVIEW_LABEL);
+    }
+    const byTarget = new Map<string, ReviewView>(c?.byTarget ?? []);
+    for (const d of read.docs) {
+      if (d.doc.v !== 2 || d.doc.kind !== "review" || !d.byOwner) continue; // only the owner's own records (P11)
+      const x = d.doc;
+      const k = `${x.target.l}:${x.target.s}`;
+      const prev = byTarget.get(k);
+      if (!prev || prev.seq < d.seq) byTarget.set(k, { action: x.action, agent: x.agent, ...(x.action === "confirm" ? { copy: x.copy } : {}), seq: d.seq });
+    }
+    this.#reviewCache = { at: now, byTarget };
+    return byTarget;
+  }
+
+  /** Pending agent proposals in these folders, newest first, each flagged if it looks like an instruction (P1, P9). */
+  async proposals(labels: string[]): Promise<Proposal[]> {
+    return traced(this.log, "owner", "proposals", {}, async (extra) => {
+      this.touch();
+      const reviews = await this.loadReviews();
+      const out: Proposal[] = [];
+      for (const label of [...new Set(labels)].filter((l) => typeof l === "string" && LABEL_RE.test(l) && !l.startsWith("engram-"))) {
+        let read = await this.readDocs(label);
+        for (let i = 0; i < 6 && read.missingSeqs.length; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+          read = await this.readDocs(label);
+        }
+        for (const d of read.docs) {
+          const w = writerOf(d);
+          if (!w || w === "owner" || reviews.has(`${label}:${d.seq}`)) continue;
+          const x = d.doc as { kind: string; text: string; t: number };
+          out.push({ label, seq: d.seq, kind: x.kind, text: x.text, t: x.t, agentId: BigInt(w), txHash: d.txHash, flagged: looksLikeInstruction(x.text) });
+        }
+      }
+      extra.count = out.length;
+      return out.sort((a, b) => b.t - a.t || (b.seq > a.seq ? 1 : -1));
+    });
+  }
+
+  /** Confirms (optionally edited) or rejects one agent proposal (provenance.md P2, P5, P6, P7, P8, P12). */
+  async review(req: { label: string; seq: bigint; action: "confirm" | "reject"; text?: string }): Promise<{ txHash: Hex; copySeq?: bigint }> {
+    return traced(this.log, "owner", "review", { label: req.label, action: req.action }, async () => {
+      this.touch();
+      if (typeof req.label !== "string" || !LABEL_RE.test(req.label) || req.label.startsWith("engram-")) fail("INPUT_INVALID", "review a proposal in one of your folders");
+      if (req.action !== "confirm" && req.action !== "reject") fail("INPUT_INVALID", "action must be confirm or reject");
+      if (typeof req.seq !== "bigint" || req.seq < 0n) fail("INPUT_INVALID", "seq must be a non-negative bigint");
+      if (req.action === "reject" && req.text !== undefined) fail("INPUT_INVALID", "a rejection takes no text");
+      const edited = req.text === undefined ? undefined : typeof req.text === "string" ? req.text.trim() : "";
+      if (edited !== undefined && ([...edited].length < 1 || [...edited].length > 1500)) fail("INPUT_INVALID", "text must be 1..1500 characters");
+      let read = await this.readDocs(req.label);
+      for (let i = 0; i < 6 && !read.docs.some((d) => d.seq === req.seq) && read.missingSeqs.includes(req.seq); i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        read = await this.readDocs(req.label);
+      }
+      const d = read.docs.find((x) => x.seq === req.seq);
+      const w = d ? writerOf(d) : undefined;
+      if (!d || !w || w === "owner") fail("INPUT_INVALID", "that entry is not an agent proposal");
+      const x = d!.doc as { kind: EntryKind; text: string };
+      let copySeq: bigint | undefined;
+      if (req.action === "confirm") {
+        // The owner's own copy (v1, so offline agents can read it too). From now on it is simply the owner's memory.
+        const copy = await this.appendPlain(req.label, crypto(() => encodeEntry({ v: 1, t: Date.now(), kind: x.kind, text: edited ?? x.text })));
+        copySeq = copy.seq;
+      }
+      const target = { l: req.label, s: req.seq.toString() };
+      const bytes = crypto(() =>
+        encodeEntryV2(
+          req.action === "confirm"
+            ? { v: 2, t: this.#clock(), kind: "review", target, agent: w!, action: "confirm", copy: copySeq!.toString() }
+            : { v: 2, t: this.#clock(), kind: "review", target, agent: w!, action: "reject" },
+        ),
+      );
+      const r = await this.appendPlain(REVIEW_LABEL, bytes);
+      const cache = this.#reviewCache ?? { at: this.#clock(), byTarget: new Map<string, ReviewView>() };
+      const k = `${req.label}:${req.seq}`;
+      const prev = cache.byTarget.get(k);
+      if (!prev || prev.seq < r.seq) cache.byTarget.set(k, { action: req.action, agent: w!, ...(copySeq !== undefined ? { copy: copySeq.toString() } : {}), seq: r.seq });
+      this.#reviewCache = cache;
+      return { txHash: r.txHash, ...(copySeq !== undefined ? { copySeq } : {}) };
+    });
+  }
+
+  /** Rejects every pending proposal from one agent, then withdraws its approval (P10). */
+  async rejectAllFrom(agentId: bigint, labels: string[]): Promise<{ rejected: number; revoke?: { txHash?: Hex; pending?: true } }> {
+    return traced(this.log, "owner", "rejectAllFrom", { agentId }, async (extra) => {
+      this.touch();
+      assertAgentId(agentId);
+      // Stop answering first (D34), then clean up its proposals.
+      const revoking = this.disapprove(agentId).catch((e) => {
+        if (e instanceof EngramError && e.code === "INPUT_INVALID") return undefined; // no approval: nothing to revoke
+        throw e;
+      });
+      let rejected = 0;
+      for (const p of await this.proposals(labels)) {
+        if (p.agentId !== agentId) continue;
+        await this.review({ label: p.label, seq: p.seq, action: "reject" });
+        rejected++;
+      }
+      const revoke = await revoking;
+      extra.count = rejected;
+      return { rejected, ...(revoke ? { revoke } : {}) };
     });
   }
 
@@ -895,6 +1036,17 @@ export class OwnerSession {
 }
 
 // ------------------------------------------------------------------------------------------ helpers
+
+/**
+ * Who wrote a memory document: "owner" for the owner's own memories, an agent id for proposals (owner-appended v2
+ * with `src`, or anything an agent appended itself), undefined for bookkeeping documents (D31, D32).
+ */
+function writerOf(d: Doc): string | undefined {
+  const x = d.doc;
+  if (x.v === 2 && x.kind !== "fact" && x.kind !== "preference" && x.kind !== "note") return undefined;
+  if (!d.byOwner) return d.agentId.toString();
+  return x.v === 1 ? "owner" : (x as { src: { agent: string } }).src.agent;
+}
 
 /** The tx must be a successful `relay(owner, data, deadline, signature)` call to the registry with exactly `req`. */
 function isOurRelay(registry: Hex, receipt: TransactionReceipt, tx: { to: Hex | null; input: Hex }, req: RelayRequest): boolean {

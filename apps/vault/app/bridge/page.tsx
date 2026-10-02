@@ -43,7 +43,7 @@ function Strip() {
     const push = (text: string, tone: Line["tone"]) => setLines((l) => [{ key: seq.current++, text, tone }, ...l].slice(0, 3));
     const onEvent = (e: BridgeEvent) => {
       if (!e.ok) return push(e.code === "RATE_LIMITED" ? "Too many reads, paused" : `Refused: ${e.code.toLowerCase().replaceAll("_", " ")}`, "error");
-      if (e.op === "propose") return push(`Saved for you: ${e.text}`, "write");
+      if (e.op === "propose") return push(`Saved for you, waiting for your review: ${e.text}`, "write");
       if (!e.entries.length) return push(e.mode === "full" ? "Asked for everything: nothing to share" : "Asked, nothing relevant shared", "empty");
       push(`${e.mode === "full" ? "Full read" : "Shared"} ${e.entries.length}: ${e.entries.map((x) => x.text).join("; ")}`, "read");
     };

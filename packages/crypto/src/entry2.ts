@@ -14,7 +14,11 @@ export type LogEntry = {
 /** One read in a batched log (disclosure.md D35): the log fields without v/kind, with their own timestamp. */
 export type LogItem = Omit<LogEntry, "v" | "kind">;
 export type LogsEntry = { v: 2; t: number; kind: "logs"; items: LogItem[] };
-export type EntryV2 = MemoryEntryV2 | PolicyEntry | LogEntry | LogsEntry;
+/** The owner's verdict on one agent proposal (contracts/provenance.md). `copy` is the confirmed copy's seq. */
+export type ReviewEntry =
+  | { v: 2; t: number; kind: "review"; target: { l: string; s: string }; agent: string; action: "confirm"; copy: string }
+  | { v: 2; t: number; kind: "review"; target: { l: string; s: string }; agent: string; action: "reject" };
+export type EntryV2 = MemoryEntryV2 | PolicyEntry | LogEntry | LogsEntry | ReviewEntry;
 export type AnyEntry = Entry | EntryV2;
 
 const MAX_BYTES = 2048;
@@ -73,6 +77,20 @@ function canonicalV2(d: unknown): EntryV2 | string {
     if (!nonNegInt(s.exp)) return "exp must be a non-negative integer (unix ms)";
     if (typeof s.active !== "boolean") return "active must be a boolean";
     return { v: 2, t: s.t as number, kind: "policy", agent: s.agent as string, origin: s.origin as string, labels: labels as string[], scope: s.scope, exp: s.exp as number, active: s.active };
+  }
+  if (s.kind === "review") {
+    const confirm = s.action === "confirm";
+    if (!sameKeys(s, confirm ? ["v", "t", "kind", "target", "agent", "action", "copy"] : ["v", "t", "kind", "target", "agent", "action"])) return "review has wrong keys";
+    if (!confirm && s.action !== "reject") return "action must be confirm or reject";
+    const tg = isObj(s.target) ? { ...s.target } : null;
+    if (!tg || !sameKeys(tg, ["l", "s"]) || !label(tg.l) || !decimal(tg.s)) return "target must be {l: label, s: decimal seq}";
+    if (!decimal(s.agent)) return "agent must be a decimal uint256";
+    const target = { l: tg.l as string, s: tg.s as string };
+    if (confirm) {
+      if (!decimal(s.copy)) return "copy must be a decimal seq";
+      return { v: 2, t: s.t as number, kind: "review", target, agent: s.agent as string, action: "confirm", copy: s.copy as string };
+    }
+    return { v: 2, t: s.t as number, kind: "review", target, agent: s.agent as string, action: "reject" };
   }
   if (s.kind === "logs") {
     if (!sameKeys(s, ["v", "t", "kind", "items"])) return "logs has wrong keys";

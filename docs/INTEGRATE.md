@@ -1,14 +1,19 @@
 # Connect your agent to Engram (about 15 minutes)
 
-Engram gives your AI agent memory that the **user** owns. Users keep their memory encrypted with their passkey,
-grant your agent one folder ("preferences", "work", ...), and can revoke it at any time. You get:
+Engram gives your AI agent memory that the **user** owns, and your agent never holds it. The user approves your
+agent for one folder ("preferences", "work", ...). While they chat with you, their vault, running in a small strip
+on your page, answers each question with only the relevant memories, and logs every read for the user. You get:
 
-- memory that follows the user across every Engram-connected agent, so they never re-explain themselves
-- no database of personal data to secure: you read it per request, decrypt it in memory, and keep nothing
+- memory that follows the user across every Engram-connected agent, with no re-explaining
+- no database of personal data, no keys, no plaintext at rest: your server never touches the chain
 - a verified identity: your agent is an ERC-8004 token on Monad, and the vault shows users who is asking
+- writes the user trusts: what your agent saves is credited to you and reaches other agents only after the user
+  confirms it (poison-resistant shared memory)
 
-Spec for everything below: [`contracts/integration.md`](../contracts/integration.md),
-[`contracts/sdk.md`](../contracts/sdk.md), [`contracts/apps.md`](../contracts/apps.md).
+Spec for everything below: [`contracts/disclosure.md`](../contracts/disclosure.md),
+[`contracts/provenance.md`](../contracts/provenance.md), [`contracts/sdk.md`](../contracts/sdk.md),
+[`contracts/integration.md`](../contracts/integration.md). Agents that must work while the user is away can use
+offline access (key grants) instead; see "Offline access" at the end.
 
 ## 0. Prerequisites
 - Node 22+, and a Monad testnet wallet with ~0.5 MON for gas (faucet: https://faucet.monad.xyz).
@@ -35,8 +40,11 @@ HOLDER_PRIVATE_KEY=0x... npx tsx scripts/register-agent.ts \
 This does four things on Monad testnet, and you can safely rerun it:
 1. registers an ERC-8004 identity whose tokenURI is `https://my-agent.example/agent-card.json`,
 2. generates your agent's X25519 encryption key and an operator wallet,
-3. publishes both to the Engram `MemoryRegistry` (users' grants are encrypted to that key),
-4. funds the operator with 0.2 MON so the agent can save memories.
+3. publishes both to the Engram `MemoryRegistry`,
+4. funds the operator with 0.2 MON.
+
+Disclosure mode (the default) only needs step 1: the key, the operator and its funds are used only if you also
+offer offline access. Pass `--fund 0` if you won't.
 
 The secrets go to `.env.my-agent` (mode 0600): keep it out of git. The script never prints them.
 
@@ -46,64 +54,43 @@ vault's consent screen shows your app as **verified**. If the origin does not ma
 
 ## 4. Browser: ask the user to connect
 ```ts
-import { connectEngram } from "@engram/sdk";
+import { connectEngram, openVaultBridge } from "@engram/sdk";
 
-// Must run in a click handler (it opens the vault popup).
-const r = await connectEngram({
+// In a click handler (it opens the vault popup).
+const { sessionProof } = await connectEngram({
   vaultUrl: "https://<engram-vault-url>",   // http://localhost:3100 when running the vault locally
   agentId: 1234n,                            // AGENT_ID from .env.my-agent
   labels: ["preferences"],                   // folders you ask for
-  scope: "read",                             // or "readwrite" to save memories
+  scope: "readwrite",                        // or "read"
   expiresInSec: 7 * 86400,
-});
+});                                          // mode defaults to "disclosure": you never get a key
 await fetch("/api/engram/session", {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ proof: r.sessionProof }),
+  body: JSON.stringify({ proof: sessionProof }),
 });
 ```
-The user unlocks their vault with a passkey and approves. You get a `sessionProof`: an EIP-712 signature by the
-user's vault account, bound to your agent id and exact origin, valid up to 30 days. If the user has no vault yet,
-the popup creates one and approves in the same step.
+The popup shows the user who is asking (verified against your agent card) and "It never gets a key". The
+`sessionProof` is signed by a **pairwise** identity: a pseudonym only your agent sees, so agents cannot correlate
+users across apps. Errors carry a `code`: `USER_CANCELLED`, `POPUP_BLOCKED`, `INPUT_INVALID`.
 
-Errors carry a `code`: `USER_CANCELLED`, `POPUP_BLOCKED`, `INPUT_INVALID`.
-
-## 5. Server: verify the session, read memory
-The smallest version is [`examples/minimal-agent/agent.ts`](../examples/minimal-agent/agent.ts) (about 90 lines,
-no LLM). It is a Fetch-style handler, so it runs on Node, Bun, Deno, Next.js route handlers or Workers:
-```bash
-set -a; . ./.env.my-agent; set +a
-PORT=3300 npx tsx examples/minimal-agent/server.ts
-```
-The core of it:
+## 5. Browser: mount the vault strip and ask it per message
 ```ts
-import { guardRequest } from "@engram/agent-kit";
-import { EngramAgent, verifyAppSession, deployments, logsSource } from "@engram/sdk";
+const vault = openVaultBridge({ vaultUrl, agentId: 1234n, mount: document.getElementById("engram")! });
 
-const d = deployments.monadTestnet;
-const config = {
-  chainId: d.chainId, registry: d.registry, identityRegistry: d.identityRegistry, rpcUrl: d.rpcUrl,
-  source: logsSource({ rpcUrl: d.rpcUrl, registry: d.registry, fromBlock: d.deployBlock, chainId: d.chainId, blockRange: 100n }),
-  relayer: { submit: async () => { throw new Error("unused by agents"); } },
-};
-const agent = new EngramAgent({ config, agentId, x25519PrivateKey, operator });
-
-// POST /session: same-origin JSON only (guardRequest blocks login CSRF), then keep the proof in an httpOnly cookie.
-const g = await guardRequest(req, { origin: APP_ORIGIN, maxBytes: 4096 });
-const owner = await verifyAppSession(g.json.proof, { config, agentId, origin: APP_ORIGIN });
-
-// Per request: read what this user granted you. Throws ACCESS_REVOKED once they revoke.
-const { entries, complete } = await agent.recall(owner, nsId);
+// Before each model call: the vault picks what is relevant to this message from the approved folders.
+const { entries } = await vault.disclose(userMessage);            // [{ kind, text, by: "owner" | "self" }]
+// The user asked "what do you know about me?": an explicit full read, logged as one.
+const everything = await vault.disclose("", { mode: "full" });
+// Save something the user said (readwrite): the vault writes it, credited to you, pending the user's review.
+await vault.propose({ kind: "preference", text: "prefers window seats" });
 ```
-Get `nsId` from `config.source.grantsForAgent(agentId)`, filtered to `owner` and `active`. For production, use the
-Engram indexer as the source (`graphqlSource(url)`, with `logsSource` as fallback via `firstAvailable`).
-`recall` is ~0.5 s from the indexer.
-
-Every key wrap is checked against the chain, and decryption is local. Nothing is cached between requests, so a
-revoke takes effect on the user's next message.
+The strip belongs to the vault (its own origin and passkey session: one tap to unlock per page load). It shows
+the user each read live. Errors: `VAULT_LOCKED` (ask the user to unlock in the strip), `NOT_APPROVED` (revoked:
+the vault stopped answering), `EXPIRED`, `RATE_LIMITED`, `BRIDGE_TIMEOUT`.
 
 ## 6. Feed memory to your model, safely
-Put memory in its own system message, marked as data:
+Put the disclosed entries in their own system message, marked as data:
 ```ts
 import { memoryBlock } from "@engram/agent-kit";
 messages.unshift({ role: "system", content: memoryBlock(entries) });
@@ -111,23 +98,30 @@ messages.unshift({ role: "system", content: memoryBlock(entries) });
 ```
 `memoryBlock` JSON-escapes each entry so a memory cannot close the block or inject instructions.
 
-Want the whole loop instead? `createAgentServer` from `@engram/agent-kit` handles sessions, rate limits, the
-`recall`/`remember` tools and caps, using any OpenAI-compatible model (KIMI by default). It is what the demo
-agents Sage and Wayfarer run: see [`apps/agent/lib/server.ts`](../apps/agent/lib/server.ts).
+Want the whole loop? `createAgentServer({ mode: "disclosure", continuationSecret })` from `@engram/agent-kit` runs
+the KIMI tool loop (`recall`, `remember`) with no chain access. Tool calls come back to your page as
+`{ pending, continuation }`: ask the strip, then POST the result to `/api/chat/continue`. Continuations are
+encrypted, single-use, and expire in 120 s. The demo agents Sage and Wayfarer run exactly this: see
+[`apps/agent/app/page.tsx`](../apps/agent/app/page.tsx) and [`apps/agent/lib/server.ts`](../apps/agent/lib/server.ts).
 
-## 7. Saving memories (readwrite)
-Ask for `scope: "readwrite"`, then:
-```ts
-await agent.remember(owner, nsId, { kind: "preference", text: "prefers window seats" }); // onchain, ~1.5-2.5 s
-```
-The entry is encrypted to the user's folder key and written by your operator wallet. The user sees it in their
-vault, labelled with your agent's name, and can revoke you at any time. Only save durable facts the user stated.
+## 7. What your agent's writes look like to the user
+Everything you `propose` waits in the user's **Review** tab, credited to your agent. The user can confirm it
+(optionally edited), reject it, or reject everything from you and revoke you in one tap. Until confirmed, only your
+agent sees what it proposed. Proposals that look like instructions to an AI ("ignore previous...", URLs,
+`</user_memory>`) are shown with a warning. Write durable facts the user stated, in their words.
 
 ## 8. Going live
 - Deploy your app at the origin you registered. If the origin changes, rerun the script with a new `--out` (new
   agent), or call `setAgentURI(agentId, newCardUrl)` on the ERC-8004 IdentityRegistry and serve a new card.
-- Keep the operator funded (rerun the script; it tops up only when the balance is low).
+- Offline access only: keep the operator funded (rerun the script; it tops up only when the balance is low).
 - Never log memory text. The SDK's structured logs contain counts and codes only.
+
+## Offline access (key grants)
+For agents that must read memory while the user is away, connect with `mode: "offline"`. The user then grants your
+agent's X25519 key one folder (the consent screen warns that you can keep copies), and your server reads with
+`EngramAgent.recall(owner, nsId)` and writes with `EngramAgent.remember(...)` as your operator wallet.
+[`examples/minimal-agent`](../examples/minimal-agent/agent.ts) shows the server side, and revoking rotates the
+folder key onchain.
 
 ## Addresses (Monad testnet, chain 10143)
 | | |

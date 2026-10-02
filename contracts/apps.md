@@ -156,6 +156,9 @@ Agent server (`createAgentServer({ ..., mode: "disclosure", continuationSecret }
 | A25 | one continuation replayed twice; `continue` beyond the owner's hourly limit | the second gets 400 `BAD_CONTINUATION`; over the limit gets 429 | DA-5 |
 | A26 | a 20-turn conversation of 3000-character messages plus 8 disclosed entries, then a tool call | `pending` with a continuation; no 413 | DA-7 |
 | A27 | decode a continuation without the secret | no readable JSON, no system prompt text | DA-9 |
+| V13 | vault with 2 pending proposals from Sage | a "Review" tab with a count of 2; each card shows the text, "Proposed by Sage", Confirm, Edit, Reject; flagged ones carry a warning | provenance.md |
+| V14 | Confirm on a card | the card leaves the inbox; the ledger shows the memory as "Confirmed from Sage" | P2 |
+| V15 | "Reject all from Sage and revoke" | every pending card from Sage leaves; Sage moves out of "Who can read it" | P10 |
 | V6 | `/bridge` framed by an unapproved origin | shows "Not approved for this site"; answers nothing | disclosure.md D9 |
 | V7 | any vault page other than `/bridge` framed | blocked by `frame-ancestors 'none'` | |
 

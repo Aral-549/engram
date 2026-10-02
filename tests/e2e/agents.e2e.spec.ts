@@ -37,7 +37,7 @@ test("Sage: proposals are saved by the vault, and a full read is logged", async 
   // Disclosure mode: the app never gets the tx (it names the owner, D33); the chip opens the user's own vault.
   await expect(chip).toHaveAttribute("href", /^http:\/\/localhost:3100/);
   await expect(page.getByRole("link", { name: "saved to your memory: I am allergic to peanuts" })).toBeVisible();
-  await expect(strip.getByText(/Saved for you: I am/)).toBeVisible();
+  await expect(strip.getByText(/Saved for you, waiting for your review: I am/)).toBeVisible();
 
   await page.getByLabel("Message Sage").fill("What do you know about me?");
   await page.getByRole("button", { name: "Send" }).click();
@@ -72,4 +72,42 @@ test("Wayfarer: read-only, plans without writing; revoke in the strip and it for
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText(/You revoked my access/)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(/Access revoked by you/)).toBeVisible();
+});
+
+test("Sage proposes, you confirm in the vault, Wayfarer plans around it (provenance.md P3)", async ({ page, context }) => {
+  // One synced passkey for every page in this context, so Sage, the vault and Wayfarer share one vault.
+  await page.goto("http://localhost:3201/");
+  await connectAndUnlock(page);
+  await page.getByLabel("Message Sage").fill("I am vegetarian and I am allergic to peanuts.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("link", { name: "saved to your memory: I am allergic to peanuts" })).toBeVisible({ timeout: 90_000 });
+
+  // Quarantined: review in the vault and confirm both.
+  const vault = await context.newPage();
+  await vault.goto("http://localhost:3100/");
+  await vault.getByRole("button", { name: "I already have one, unlock it" }).click();
+  await expect(vault.getByRole("heading", { name: "What your AI knows about you" })).toBeVisible({ timeout: 60_000 });
+  await vault.getByRole("button", { name: /^Review/ }).click();
+  await expect(vault.getByRole("heading", { name: "Review what agents proposed" })).toBeVisible();
+  for (let i = 0; i < 2; i++) {
+    await vault.getByRole("button", { name: "Confirm", exact: true }).first().click({ timeout: 60_000 });
+    await expect(vault.getByRole("button", { name: "Confirm", exact: true })).toHaveCount(1 - i, { timeout: 60_000 });
+  }
+  await expect(vault.getByText(/Nothing waiting/)).toBeVisible();
+
+  // Wayfarer, approved on the same vault, now gets the confirmed allergy as the owner's own memory.
+  const way = await context.newPage();
+  await way.goto("http://localhost:3202/");
+  const popupPromise = way.waitForEvent("popup");
+  await way.getByRole("button", { name: "Connect your memory" }).click();
+  const popup = await popupPromise;
+  await popup.getByRole("button", { name: "Unlock and approve" }).click();
+  await expect(popup.getByRole("heading", { name: "Access granted" })).toBeVisible({ timeout: 90_000 });
+  const strip = way.frameLocator("iframe.engram-bridge");
+  await strip.getByRole("button", { name: "Unlock memory" }).click();
+  await expect(strip.getByText("sharing only what is relevant")).toBeVisible({ timeout: 60_000 });
+  await way.getByLabel("Message Wayfarer").fill("Plan three dinners this week, mind my allergies.");
+  await way.getByRole("button", { name: "Send" }).click();
+  await expect(way.getByText(/Using what you shared \(.*allergic to peanuts/)).toBeVisible({ timeout: 60_000 });
+  await expect(strip.getByText(/Shared 1: I am allergic to peanuts/)).toBeVisible();
 });

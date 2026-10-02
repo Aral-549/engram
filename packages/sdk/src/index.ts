@@ -30,8 +30,11 @@ export {
   type RecalledAnyEntry,
   POLICY_LABEL,
   LOG_LABEL,
+  REVIEW_LABEL,
+  type Proposal,
 } from "./owner.js";
 export { selectEntries, selectCandidates, tokens, type Candidate, type DisclosedEntry, type DisclosureMode } from "./select.js";
+export { looksLikeInstruction } from "./instruction.js";
 export { startBridge, openVaultBridge, type VaultBridge, type BridgeState, type BridgeEvent } from "./bridge.js";
 export { EngramAgent, isCanonicalX25519, type InboxItem } from "./agent.js";
 export {

@@ -1,5 +1,5 @@
 "use client";
-import type { GrantView, LogView, PolicyView, RecalledAnyEntry } from "@engram/sdk";
+import type { GrantView, LogView, PolicyView, Proposal, RecalledAnyEntry } from "@engram/sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { addLabel, discoverLabels, isValidLabel, type DiscoveredNamespace } from "@/lib/discover";
 import { addressUrl, expiresIn, relativeTime, shortAddr, txUrl, untilSettled } from "@/lib/engram";
@@ -8,12 +8,29 @@ import { Words } from "./Words";
 import { useSession } from "./SessionProvider";
 import { useAgentCards } from "./useAgentCards";
 
-type Tab = "memory" | "access" | "reads";
+type Tab = "memory" | "review" | "access" | "reads";
 const KINDS = ["preference", "fact", "note"] as const;
 
 export function Dashboard() {
-  const { session, lock, error, clearError } = useSession();
+  const { session, lock, error, clearError, run } = useSession();
   const [tab, setTab] = useState<Tab>("memory");
+  const [pendingCount, setPendingCount] = useState(0);
+  // Keep the Review badge current: agents can propose while you look at another tab.
+  useEffect(() => {
+    let stop = false;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      const labels = (await run((s) => discoverLabels(s)))?.map((n) => n.label) ?? [];
+      const p = await run((s) => s.proposals(labels));
+      if (p && !stop) setPendingCount(p.length);
+      if (!stop) t = setTimeout(() => void tick(), 6000);
+    };
+    void tick();
+    return () => {
+      stop = true;
+      if (t) clearTimeout(t);
+    };
+  }, [run]);
   if (!session) return null;
   return (
     <main className="mx-auto grid min-h-dvh max-w-7xl grid-cols-1 md:grid-cols-[17rem_1fr]">
@@ -30,9 +47,14 @@ export function Dashboard() {
           <p className="mt-1 text-xs text-ink-soft">Monad testnet. Unlocked with your passkey.</p>
         </div>
         <nav className="flex gap-2 md:flex-col">
-          {(["memory", "access", "reads"] as Tab[]).map((t) => (
+          {(["memory", "review", "access", "reads"] as Tab[]).map((t) => (
             <button key={t} onClick={() => setTab(t)} className={`btn px-3 py-2 text-left ${tab === t ? "bg-card border border-rule" : "border border-transparent hover:bg-card"}`}>
-              {t === "memory" ? "Memory" : t === "access" ? "Who can read it" : "Reads"}
+              {t === "memory" ? "Memory" : t === "review" ? "Review" : t === "access" ? "Who can read it" : "Reads"}
+              {t === "review" && pendingCount > 0 ? (
+                <span className="ml-auto rounded-full bg-rust px-1.5 py-0.5 font-mono text-[10px] leading-none text-[#f7f3ea]" aria-label={`${pendingCount} waiting`}>
+                  {pendingCount}
+                </span>
+              ) : null}
             </button>
           ))}
         </nav>
@@ -47,7 +69,7 @@ export function Dashboard() {
             <button onClick={clearError} className="font-mono text-xs underline">dismiss</button>
           </div>
         ) : null}
-        {tab === "memory" ? <MemoryView /> : tab === "access" ? <AccessView /> : <ReadsView />}
+        {tab === "memory" ? <MemoryView /> : tab === "review" ? <ReviewView onCount={setPendingCount} /> : tab === "access" ? <AccessView /> : <ReadsView />}
       </section>
     </main>
   );
@@ -158,7 +180,8 @@ function MemoryView() {
       <ul className="mt-8 space-y-4">
         {spaces === null ? <li className="text-ink-soft">Opening your memory…</li> : null}
         {spaces && entries.length === 0 ? <li className="text-ink-soft">Nothing in {active} yet.</li> : null}
-        {entries.map((e, i) => (
+        {/* Reviewed proposals are hidden: a confirmed one lives on as your copy, a rejected one is gone. */}
+        {entries.filter((e) => e.review !== "confirmed" && e.review !== "rejected").map((e, i) => (
           <MemoryCard key={`${e.seq}`} entry={e} delay={i * 45} />
         ))}
       </ul>
@@ -172,13 +195,16 @@ function MemoryView() {
 function MemoryCard({ entry, delay }: { entry: RecalledAnyEntry; delay: number }) {
   // Disclosure-mode proposals are written by the vault (byOwner) on an agent's behalf: credit the agent (src).
   const writer = entry.src ? entry.src.agent : entry.byOwner ? null : entry.agentId.toString();
-  const cards = useAgentCards(writer ? [writer] : []);
+  const cards = useAgentCards([writer, entry.confirmedFrom].filter((x): x is string => !!x));
   const author = writer ? (cards[writer]?.name ?? `Agent #${writer}`) : "You";
+  const confirmedName = entry.confirmedFrom ? (cards[entry.confirmedFrom]?.name ?? `Agent #${entry.confirmedFrom}`) : "";
   return (
     <li className="index-card settle lift px-5 py-4 pl-12" style={{ animationDelay: `${delay}ms` }}>
       <p className="text-lg leading-[1.8rem]">{entry.text}</p>
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-ink-soft">
-        <span className={writer ? "text-seal" : ""}>{!writer ? "Written by you" : entry.src ? `Proposed by ${author}` : `Written by ${author}`}</span>
+        <span className={writer ? "text-seal" : ""}>
+          {!writer ? (entry.confirmedFrom ? `Confirmed from ${confirmedName}` : "Written by you") : `Proposed by ${author}, waiting for your review`}
+        </span>
         <span>{entry.kind}</span>
         <span>{relativeTime(entry.t)}</span>
         <a href={txUrl(entry.txHash)} target="_blank" rel="noreferrer" className="underline decoration-rule underline-offset-2 hover:text-ink">
@@ -365,6 +391,122 @@ function ReadsView() {
           );
         })}
       </ol>
+    </div>
+  );
+}
+
+function ReviewView({ onCount }: { onCount: (n: number) => void }) {
+  const { run } = useSession();
+  const [items, setItems] = useState<Proposal[] | null>(null);
+  const [labels, setLabels] = useState<string[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const load = useCallback(async () => {
+    const ls = (await run((s) => discoverLabels(s)))?.map((n) => n.label) ?? [];
+    setLabels(ls);
+    const p = await run((s) => s.proposals(ls));
+    if (p) {
+      setItems(p);
+      onCount(p.length);
+    }
+  }, [run, onCount]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const cards = useAgentCards([...new Set((items ?? []).map((p) => p.agentId.toString()))]);
+  const byAgent = new Map<string, Proposal[]>();
+  for (const p of items ?? []) byAgent.set(p.agentId.toString(), [...(byAgent.get(p.agentId.toString()) ?? []), p]);
+  const key = (p: Proposal) => `${p.label}:${p.seq}`;
+
+  async function act(p: Proposal, action: "confirm" | "reject", text?: string) {
+    setBusy(key(p));
+    await run((s) => s.review({ label: p.label, seq: p.seq, action, ...(text !== undefined ? { text } : {}) }));
+    setBusy(null);
+    setEditing(null);
+    await load();
+  }
+  async function rejectAll(agentId: string) {
+    setBusy(`all:${agentId}`);
+    await run((s) => s.rejectAllFrom(BigInt(agentId), labels));
+    setBusy(null);
+    await load();
+  }
+
+  return (
+    <div className="max-w-3xl">
+      <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="Review what agents proposed"><Words>Review what agents proposed</Words></h2>
+      <p className="mt-2 text-ink-soft">
+        An agent&apos;s proposals stay with that agent until you confirm them. Only what you confirm becomes your memory and reaches your
+        other agents. This is what keeps one bad agent from poisoning the rest.
+      </p>
+      {items === null ? <p className="mt-8 text-ink-soft">Looking for proposals…</p> : null}
+      {items && items.length === 0 ? <p className="mt-8 text-ink-soft">Nothing waiting. Agents&apos; proposals appear here.</p> : null}
+      {[...byAgent.entries()].map(([agentId, list]) => {
+        const name = cards[agentId]?.name ?? `Agent #${agentId}`;
+        return (
+          <section key={agentId} className="mt-8">
+            <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-rule pb-2">
+              <p className="font-mono text-xs uppercase tracking-wider text-ink-soft">
+                <span className="text-seal">{name}</span> proposed {list.length}
+              </p>
+              <button className="btn btn-danger px-2.5 py-1 text-xs" disabled={busy !== null} onClick={() => void rejectAll(agentId)}>
+                {busy === `all:${agentId}` ? "Rejecting…" : `Reject all from ${name} and revoke`}
+              </button>
+            </div>
+            <ul className="mt-4 space-y-3">
+              {list.map((p, i) => (
+                <li key={key(p)} className={`paper-card settle px-5 py-4 ${p.flagged ? "border-rust/60" : ""}`} style={{ animationDelay: `${i * 40}ms` }}>
+                  {editing === key(p) ? (
+                    <textarea
+                      aria-label="Edit before confirming"
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      rows={2}
+                      maxLength={1500}
+                      className="w-full resize-none rounded-sm border border-rule bg-paper px-2 py-1.5 text-lg leading-relaxed outline-none focus:border-seal"
+                    />
+                  ) : (
+                    <p className="text-lg leading-relaxed">{p.text}</p>
+                  )}
+                  {p.flagged ? (
+                    <p className="mt-2 rounded-sm bg-rust-soft px-2 py-1 text-xs text-rust">
+                      This looks like an instruction to an AI, not a fact about you. Confirm only if you really meant it.
+                    </p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="mr-auto font-mono text-xs text-ink-soft">
+                      {p.kind} · {p.label} · {relativeTime(p.t)}
+                    </span>
+                    {editing === key(p) ? (
+                      <>
+                        <button className="btn btn-primary px-3 py-1.5 text-sm" disabled={busy !== null || !draft.trim()} onClick={() => void act(p, "confirm", draft)}>
+                          Save and confirm
+                        </button>
+                        <button className="btn btn-ghost px-3 py-1.5 text-sm" onClick={() => setEditing(null)}>Cancel</button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="btn btn-primary px-3 py-1.5 text-sm" disabled={busy !== null} onClick={() => void act(p, "confirm")}>
+                          {busy === key(p) ? "Sealing…" : "Confirm"}
+                        </button>
+                        <button className="btn btn-ghost px-3 py-1.5 text-sm" disabled={busy !== null} onClick={() => { setEditing(key(p)); setDraft(p.text); }}>
+                          Edit
+                        </button>
+                        <button className="btn btn-danger px-3 py-1.5 text-sm" disabled={busy !== null} onClick={() => void act(p, "reject")}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        );
+      })}
     </div>
   );
 }

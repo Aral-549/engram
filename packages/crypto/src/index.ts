@@ -12,4 +12,4 @@ export {
   type WrapParams,
 } from "./envelope.js";
 export { encodeEntry, parseEntry, type Entry, type EntryKind } from "./entry.js";
-export { encodeEntryV2, parseAnyEntry, type AnyEntry, type EntryV2, type LogEntry, type LogItem, type LogsEntry, type MemoryEntryV2, type PolicyEntry } from "./entry2.js";
+export { encodeEntryV2, parseAnyEntry, type AnyEntry, type EntryV2, type LogEntry, type LogItem, type LogsEntry, type MemoryEntryV2, type PolicyEntry, type ReviewEntry } from "./entry2.js";

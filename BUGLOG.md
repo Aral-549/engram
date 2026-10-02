@@ -245,3 +245,10 @@ Found by a separate adversarial pass (probes in tests/adversarial/disclosure/ an
 - **Stage/module:** sdk owner/bridge/connect, crypto entry2, agent-kit disclosure engine, vault, agent app
 - **Regression cases added:** `tests/golden/disclosure/disclosure.review.golden.test.ts`, `tests/golden/crypto/crypto.v2-logs.golden.test.ts`, `tests/golden/agent-kit/agent-kit.disclosure-review.golden.test.ts`
 - **Status:** fixed (DA-8 mitigated: logs batched and delayed 10-20 s; timing linkability reduced, not eliminated)
+
+## 2026-10-03 -- DP-1: two sessions of one owner collided on the relay nonce
+- **Symptom:** in the provenance e2e, confirming the second proposal in the vault failed intermittently; the relay logged `BAD_SIGNATURE` / `BadSignature` for one owner.
+- **Root cause:** the vault tab and the Disclosure bridge (a second session of the same owner, flushing its read log) signed relay calls with the same nonce; the SDK re-signed only once, which is not enough when both sessions write repeatedly.
+- **Stage/module:** sdk `OwnerSession.relaySerial` (stale-nonce retry)
+- **Regression case added:** `tests/golden/sdk/sdk.concurrency.golden.test.ts` -- case 55
+- **Status:** fixed

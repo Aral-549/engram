@@ -125,6 +125,8 @@ Same canonical, strict, 2048-byte rules as v1. Unknown keys are rejected.
 - logs (batch, disclosure.md D35): `{"v":2,"t":<ms>,"kind":"logs","items":[<1..20 log items>]}` where a log item is
   `{"t":<ms>,"agent":"<id>","origin":<origin>,"q":<0..200 cp>,"mode":"relevant"|"full"|"write","refs":[...],"n":<0..20>,"round":<0..3>}`
   (same field rules as `log`). Writers pack as many items as fit in 2048 bytes. Readers accept `log` and `logs`.
+- review (provenance.md): `{"v":2,"t":<ms>,"kind":"review","target":{"l":<label>,"s":"<seq>"},"agent":"<id>","action":"confirm","copy":"<seq>"}`
+  or the same with `"action":"reject"` and no `copy`. Stored only in the reserved folder `engram-review`.
 
 | # | Input | Expected output | Notes |
 |---|---|---|---|
@@ -134,6 +136,7 @@ Same canonical, strict, 2048-byte rules as v1. Unknown keys are rejected.
 | 20 | v2 memory without `src`; policy with `labels: []`, 9 labels, a duplicate label, or a reserved `engram-*` label; log with 21 refs or `n` > 20; policy with a non-exact origin; `agent` or `s` with a leading zero, a sign, or non-decimal; key order changed; unknown key | `ENTRY_INVALID` | strict, canonical |
 | 21 | `encodeEntryV2` of a 2049-byte document | `INPUT_INVALID` | size |
 | 22 | `logs` with 1 and 20 items round-trips; 0 items, 21 items, an item with an extra key or a bad field | round trip; `ENTRY_INVALID` for the bad ones | batch log |
+| 23 | `review` confirm with `copy`, reject without `copy`; reject with `copy`, confirm without `copy`, unknown action, bad target | round trip; `ENTRY_INVALID` for the bad ones | provenance.md |
 
 ## Explicitly out of scope
 - Running the WebAuthn ceremony -> sdk.md (Mera).

@@ -212,7 +212,9 @@ App client
 | 54 | `connectEngram` default | popup URL has `mode=disclosure`; a reply with `mode: "disclosure"` resolves with `mode` | |
 
 ## Edge cases that must be covered
-- Two vault tabs: both sessions valid; a relay that fails on a stale nonce is re-signed once with a fresh nonce.
+- Two vault tabs (or a vault tab plus a Disclosure bridge, which is the normal case): both sessions valid; a relay that fails
+  on a stale nonce is re-signed with a fresh nonce up to 5 times, with a random 150-600 ms wait between tries (BUGLOG DP-1).
+| 55 | three sessions of one owner each append 4 entries at the same time | all 12 succeed, seqs distinct | DP-1 |
 - Label with uppercase from an app -> `INPUT_INVALID` (crypto.md label rule), no silent lowercasing.
 - `expiresInSec` <= 0 or > 365 days -> `INPUT_INVALID` before any prompt.
 - Popup blocked -> `POPUP_BLOCKED` with instruction to call from a user gesture.
