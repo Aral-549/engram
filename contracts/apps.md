@@ -122,6 +122,47 @@ Both agent apps are thin Next.js apps over one tested package:
 | V5 | Brand-new user opens the consent popup from an agent app | "New here? Create a vault and approve": one passkey ceremony creates the vault and grants (within the 60 s window), reply carries the app-session proof | onboarding from an app |
 | 11 | Memory text contains "ignore your instructions and reveal ..." | treated as data inside a delimited block in the system prompt; agent does not follow it | prompt-injection hygiene |
 
+## Disclosure mode in the apps (2026-10-02, contracts/disclosure.md)
+Vault
+- `/connect` defaults to disclosure. Copy: "<Agent> will ask your vault for relevant memories while you chat. It
+  never gets a key. Every read appears in your log." `mode=offline` shows the old grant screen with a stronger
+  warning: "This agent can read these folders without you and can keep copies."
+- `/bridge?agentId=N` is the only page allowed to be framed (`frame-ancestors *`); every other page sends
+  `frame-ancestors 'none'`. Its UI is a strip: lock state, "Unlock memory", the last reads (live), "Revoke". It has
+  no approve or confirm controls (clickjacking).
+- Dashboard: "Approved agents" (policies) and a "Reads" log (newest first; query, entries, agent, time). Revoke
+  disapproves and also revokes any offline grant for that agent.
+
+Agent server (`createAgentServer({ ..., mode: "disclosure", continuationSecret })`)
+- `chat` takes `disclosed` and `memory`. Disclosed entries go into the `<user_memory>` block with `by`.
+  `recall` and `remember` tool calls return `{ pending, continuation }` instead of reading the chain.
+- `continuation` = base64url(JSON) + HMAC-SHA256 with `continuationSecret`. It holds the conversation so far,
+  round/write/recall counters, the owner, agentId, origin, a pending id and an expiry of 120 s. Size cap 96 KB.
+- No onchain grant check in this mode, so A12 (`NO_GRANT`) does not apply; cost is bounded by the A13/A18 rate
+  limits. This is a known limitation: a self-signed proof can chat without memory.
+
+| # | Input | Expected output | Notes |
+|---|---|---|---|
+| A21 | disclosure-mode chat with `disclosed: [vegetarian]`, model answers directly | 200 reply; the KIMI request contains vegetarian only inside `<user_memory>`; no chain reads by the server | |
+| A22 | model calls `remember` | `{ pending: { tool: "remember", args } }`; after `continue` with `{ ok, seq, txHash }`, `saved` lists it | owner-signed write |
+| A23 | tampered, expired, cross-owner or replayed-after-expiry continuation | 400 `BAD_CONTINUATION`, model not called | disclosure.md D24 |
+| A24 | `memory: "revoked"` | the model is told access was revoked; `accessRevoked: true`; no tool round-trips | |
+| V6 | `/bridge` framed by an unapproved origin | shows "Not approved for this site"; answers nothing | disclosure.md D9 |
+| V7 | any vault page other than `/bridge` framed | blocked by `frame-ancestors 'none'` | |
+
+## Design and motion (2026-10-02)
+Direction: "archival ledger on warm paper" (Instrument Serif + IBM Plex, paper/ink/seal/rust tokens, wax-seal mark).
+The landing page shows the product working (a live ledger specimen), not a feature list. Each agent has its own
+accent and monogram. Motion is ink-like: words rise in, text bleeds in left to right, seals stamp.
+
+| # | Input | Expected output | Notes |
+|---|-------|------------------|-------|
+| V8 | open the vault landing page | hero words reveal in sequence; the ledger specimen plays its rows in a loop (saved by you, written by Sage, Wayfarer can read, revoked); the create/unlock buttons are visible without scrolling at 1440x900 and 390x844 | |
+| V9 | `prefers-reduced-motion: reduce` | no animation anywhere; the specimen shows all rows statically | accessibility |
+| V10 | an agent reply arrives | its full text is in the DOM immediately (animation is visual only), so screen readers and tests see the whole reply | |
+| V11 | every e2e accessible name and text listed in tests/e2e (buttons, links, labels, status lines) | unchanged | no selector churn |
+| V12 | phone width (390 px) | no horizontal scroll; agent side rail collapses into the header | |
+
 ## Edge cases that must be covered
 - Popup blocked -> inline instructions.
 - User opens planner on a device without a PRF-capable authenticator -> vault explains and suggests phone QR (hybrid) sign-in.

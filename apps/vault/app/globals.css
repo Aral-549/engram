@@ -155,3 +155,168 @@ main,
   outline: 2px solid var(--color-seal);
   outline-offset: 2px;
 }
+
+/* ---------------------------------------------------------------- motion system (contracts/apps.md V8-V12)
+   Ink, not confetti: words rise in, text bleeds in left to right, seals stamp. All visual only; text is in the DOM
+   immediately, and prefers-reduced-motion turns every animation off. */
+@keyframes word-rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.45em);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+.words > .w {
+  display: inline-block;
+  animation: word-rise 760ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i) * 55ms + var(--d, 0ms));
+}
+
+/* Hand-drawn underline that draws itself under an emphasised word. */
+.ink-mark {
+  position: relative;
+  white-space: nowrap;
+}
+.ink-mark::after {
+  content: "";
+  position: absolute;
+  left: -0.04em;
+  right: -0.04em;
+  bottom: 0.14em;
+  height: 0.05em;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.35;
+  transform-origin: left;
+  animation: ink-draw 900ms cubic-bezier(0.6, 0, 0.2, 1) both;
+  animation-delay: var(--d, 900ms);
+}
+@keyframes ink-draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Text bleeding onto the page, left to right. */
+@keyframes ink-in {
+  from {
+    -webkit-mask-position: 100% 0;
+    mask-position: 100% 0;
+    opacity: 0.2;
+  }
+  to {
+    -webkit-mask-position: 0 0;
+    mask-position: 0 0;
+    opacity: 1;
+  }
+}
+.ink-in {
+  -webkit-mask-image: linear-gradient(90deg, #000 45%, transparent 55%);
+  mask-image: linear-gradient(90deg, #000 45%, transparent 55%);
+  -webkit-mask-size: 220% 100%;
+  mask-size: 220% 100%;
+  animation: ink-in 900ms cubic-bezier(0.3, 0.6, 0.2, 1) both;
+}
+
+/* Children enter one after another; set --i on each child. */
+.stagger > * {
+  animation: settle 480ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 70ms + var(--d, 0ms));
+}
+
+/* Live status dot. */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-seal) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-seal);
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+
+/* Thinking: three ink drops. */
+@keyframes drop {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.25;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+.drops > span {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 3px;
+  border-radius: 999px;
+  background: var(--color-seal);
+  animation: drop 1.1s ease-in-out infinite;
+}
+.drops > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.drops > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* Lift on hover for interactive paper. */
+.lift {
+  transition: transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 180ms ease, border-color 160ms ease;
+}
+.lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 1px 0 rgba(27, 25, 22, 0.04), 0 14px 24px -16px rgba(27, 25, 22, 0.45);
+}
+
+/* Strike-through that draws across revoked lines. */
+.strike {
+  position: relative;
+}
+.strike::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 52%;
+  height: 1.5px;
+  background: var(--color-rust);
+  transform-origin: left;
+  animation: ink-draw 600ms cubic-bezier(0.6, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .words > .w,
+  .ink-mark::after,
+  .ink-in,
+  .stagger > *,
+  .live-dot,
+  .drops > span,
+  .strike::after {
+    animation: none !important;
+    -webkit-mask-image: none;
+    mask-image: none;
+    filter: none;
+  }
+  .lift:hover {
+    transform: none;
+  }
+}

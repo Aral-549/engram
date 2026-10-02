@@ -108,6 +108,27 @@ Python implementation (`cryptography` + `hashlib`), not by `packages/crypto`, th
 - `nonce` / `ephemeralPrivate` parameters exist only to reproduce golden vectors. Production code
   (the SDK) never passes them; passing a fixed nonce in production would break AES-GCM.
 
+## Additions for Disclosure mode (2026-10-02, contracts/disclosure.md)
+Pairwise identity key (one per agent, never onchain):
+- info `"engram.v1/pairwise/secp256k1/" + agentId + "/" + counter` (agentId decimal uint256, counter from 0;
+  same retry-on-invalid rule as the account key). `pairwiseAddress(agentId)` = its EVM address.
+
+Entry document v2. v1 `parseEntry` is unchanged and still rejects any `"v":2` document (frozen golden case).
+A new `parseAnyEntry` accepts v1 or v2. `encodeEntry` keeps producing v1; a new `encodeEntryV2` produces v2.
+Same canonical, strict, 2048-byte rules as v1. Unknown keys are rejected.
+- memory: `{"v":2,"t":<ms>,"kind":"fact"|"preference"|"note","text":<1..1500 cp>,"src":{"agent":"<decimal uint256>"}}`
+  (v2 memory **requires** `src`; owner-written memories stay v1)
+- policy: `{"v":2,"t":<ms>,"kind":"policy","agent":"<id>","origin":<exact origin>,"labels":[<1..8 labels>],"scope":"read"|"readwrite","exp":<ms>,"active":<bool>}`
+- log: `{"v":2,"t":<ms>,"kind":"log","agent":"<id>","origin":<origin>,"q":<0..200 cp>,"mode":"relevant"|"full"|"write","refs":[{"l":<label>,"s":"<seq>"}],"n":<int 0..20>,"round":<0..3>}` (refs <= 20)
+
+| # | Input | Expected output | Notes |
+|---|---|---|---|
+| 17 | prf = 32 x `0x01`, `pairwise(7)`, `pairwise(8)` | equal vector V3 (Python reference); all differ from `accountKey` | independent impl |
+| 18 | same prf on "another device" | `pairwise(7)` byte-identical | stable |
+| 19 | `parseAnyEntry` of each v2 example above | returns it; `parseEntry` of the same bytes -> `ENTRY_INVALID` | v1 untouched |
+| 20 | v2 memory without `src`, policy with `labels: []` or 9 labels, log with 21 refs, policy with non-exact origin, `agent` with a leading zero or non-decimal | `ENTRY_INVALID` | strict |
+| 21 | `encodeEntryV2` of a 2049-byte document | `INPUT_INVALID` | size |
+
 ## Explicitly out of scope
 - Running the WebAuthn ceremony -> sdk.md (Mera).
 - Deciding who is allowed to write -> memory-registry.md.

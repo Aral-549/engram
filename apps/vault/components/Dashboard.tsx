@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { addLabel, discoverLabels, isValidLabel, type DiscoveredNamespace } from "@/lib/discover";
 import { addressUrl, expiresIn, relativeTime, shortAddr, txUrl, untilSettled } from "@/lib/engram";
 import { Seal } from "./Seal";
+import { Words } from "./Words";
 import { useSession } from "./SessionProvider";
 import { useAgentCards } from "./useAgentCards";
 
@@ -105,7 +106,7 @@ function MemoryView() {
 
   return (
     <div className="max-w-3xl">
-      <h2 className="font-display text-4xl tracking-tight md:text-5xl">What your AI knows about you</h2>
+      <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="What your AI knows about you"><Words>What your AI knows about you</Words></h2>
       <p className="mt-2 text-ink-soft">Encrypted before it leaves this device. Only you, and apps you approve per folder, can read it.</p>
 
       <div className="mt-8 flex flex-wrap items-end gap-1 border-b border-rule">
@@ -172,7 +173,7 @@ function MemoryCard({ entry, delay }: { entry: RecalledEntry; delay: number }) {
   const cards = useAgentCards(entry.byOwner ? [] : [entry.agentId.toString()]);
   const author = entry.byOwner ? "You" : (cards[entry.agentId.toString()]?.name ?? `Agent #${entry.agentId}`);
   return (
-    <li className="index-card settle px-5 py-4 pl-12" style={{ animationDelay: `${delay}ms` }}>
+    <li className="index-card settle lift px-5 py-4 pl-12" style={{ animationDelay: `${delay}ms` }}>
       <p className="text-lg leading-[1.8rem]">{entry.text}</p>
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-ink-soft">
         <span className={entry.byOwner ? "" : "text-seal"}>{entry.byOwner ? "Written by you" : `Written by ${author}`}</span>
@@ -217,7 +218,7 @@ function AccessView() {
 
   return (
     <div className="max-w-3xl">
-      <h2 className="font-display text-4xl tracking-tight md:text-5xl">Who can read your memory</h2>
+      <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="Who can read your memory"><Words>Who can read your memory</Words></h2>
       <p className="mt-2 text-ink-soft">
         Revoking changes the folder&apos;s key. The app keeps nothing new; what it already read cannot be un-shared, by anyone.
       </p>
@@ -228,7 +229,7 @@ function AccessView() {
           const card = cards[g.agentId.toString()];
           const id = `${g.nsId}-${g.agentId}`;
           return (
-            <li key={id} className="paper-card settle grid grid-cols-[1fr_auto] items-center gap-4 px-5 py-4">
+            <li key={id} className="paper-card settle lift grid grid-cols-[1fr_auto] items-center gap-4 px-5 py-4">
               <div>
                 <p className="font-medium">{card?.name ?? `Agent #${g.agentId}`}</p>
                 <p className="mt-0.5 text-sm text-ink-soft">{card?.description ?? "ERC-8004 registered agent"}</p>

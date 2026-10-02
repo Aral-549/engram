@@ -156,6 +156,35 @@ Known limitation (documented, not fixed): entry AAD binds owner, namespace, and 
 seq after encryption), so a lying source can serve an authentic entry at a different seq or duplicate one. It cannot forge
 or inject content. Completeness is still checked against chain `nextSeq`.
 
+## Disclosure mode API (2026-10-02, contracts/disclosure.md)
+Owner (vault origin)
+- `session.pairwise(agentId)` -> address. `session.signAppSession({ agentId, origin, ttlSec, pairwise: true })`
+  signs with the pairwise key (proof.owner = pairwise address).
+- `session.approve(agentId, { origin, labels, scope, expiresInSec })` -> `{ txHash, pairwiseOwner }`: appends a
+  policy entry to `engram-policy`. Same prompt rule as `grant`: a passkey prompt unless a ceremony happened in the
+  last 60 s.
+- `session.disapprove(agentId)` -> `{ txHash }` (policy with `active: false`); `session.policies()` -> the latest per agent.
+- `session.disclose({ agentId, origin, query, mode, round })` -> `{ entries: DisclosedEntry[], logSeq? }` (selection
+  rules in disclosure.md); `session.propose(agentId, origin, { kind, text, label? })` -> `{ seq, txHash }`.
+- `session.disclosures({ agentId? })` -> decrypted log entries, newest first.
+
+Vault bridge (vault origin): `startBridge({ session, agentId, window })` answers the `postMessage` protocol and
+returns `{ stop() }`.
+
+App client
+- `connectEngram({ ..., mode?: "disclosure" | "offline" })`, default `"disclosure"`. Disclosure replies carry
+  `mode` and the pairwise `owner`; offline keeps today's behaviour.
+- `openVaultBridge({ vaultUrl, agentId, mount: HTMLElement })` -> `{ status(), disclose(query, { mode?, round? }), propose(entry), onStatus(cb), close() }`.
+  Request ids are random; replies are matched by id with a 10 s timeout (`BRIDGE_TIMEOUT`).
+
+| # | Input | Expected output | Notes |
+|---|---|---|---|
+| 48 | `approve` then `policies()` | the new policy; nothing in `grants()`; no `grant` or `setAgentKeys` tx | disclosure.md D1 |
+| 49 | `approve` twice for one agent with different labels | `policies()` shows only the latest | latest wins |
+| 50 | `disclose` when no policy, or `disapprove`d, or expired | `NOT_APPROVED` / `EXPIRED`; nothing returned | |
+| 51 | `openVaultBridge` reply with a mismatched id, a wrong origin, or a non-object | ignored; the request still times out with `BRIDGE_TIMEOUT` | |
+| 52 | `JSON.stringify` of a bridge client or the session after `pairwise()` | no key material | |
+
 ## Edge cases that must be covered
 - Two vault tabs: both sessions valid; a relay that fails on a stale nonce is re-signed once with a fresh nonce.
 - Label with uppercase from an app -> `INPUT_INVALID` (crypto.md label rule), no silent lowercasing.
