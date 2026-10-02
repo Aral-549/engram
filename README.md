@@ -1,19 +1,32 @@
 # Engram
 
-**Your AI memory, owned by you: encrypted with your passkey, stored on Monad, shared with each AI agent one
-folder at a time, and revocable in one tap.**
+**Your AI memory, owned by you. Agents never hold it: they ask, and your vault answers with only what is relevant,
+logging every read. Encrypted with your passkey, stored on Monad, revocable in one tap.**
 
-Every AI app today keeps its own private copy of you. You re-explain your diet to the travel planner, your stack to
-the coding assistant, and you cannot see, move or delete what any of them stored. Engram turns that around:
+Every AI app keeps its own private copy of you. You re-explain your diet to the travel planner and your stack to the
+coding assistant, and you cannot see what any of them stored. Today's "user-owned memory" products fix the copies
+by sharing a decryption key with each approved agent. From then on the agent can read and copy everything, and you
+never learn what it looked at.
 
-- **One memory, many agents.** Tell one agent you are vegetarian; every agent you approve already knows it.
-- **Encrypted end to end.** Keys come from your passkey (WebAuthn PRF via Mera). Monad stores only ciphertext.
-  No seed phrase, no extension, no server that can read your memory.
-- **Per-folder, expiring grants to verified agents.** Agents are ERC-8004 identities. You grant one folder
-  (`preferences`, `work`, ...), read or read-write, for a fixed time.
-- **Revocation that actually works.** Revoking rotates the folder key onchain, so a revoked agent cannot read
-  anything written afterwards, and the app gets `ACCESS_REVOKED` on its next request.
-- **Gasless for users.** Your vault signs EIP-712 requests; a relayer pays gas. Agents pay for their own writes.
+Engram removes the key from the agent entirely:
+
+- **Agents ask, the vault answers.** While you chat, the agent's page carries a small strip of your vault. For each
+  message the vault, on your device, picks only the relevant memories from the folders you approved and hands over
+  those, nothing else. Asking Wayfarer "plan dinner, any allergy concerns?" shares "allergic to peanuts", not your
+  whole profile.
+- **Every read is visible.** The strip shows each read live, and your vault keeps an encrypted log of every question
+  and what was shared. A broad "what do you know about me?" has to be an explicit full read, logged as one.
+- **Revoke is instant.** Revoking means the vault stops answering, on the next message. Nothing to rotate and no key
+  to claw back. (What was already shown cannot be un-shown; Engram minimises it and logs it.)
+- **No cross-app tracking.** Each agent sees a different pseudonymous id for you, derived from your passkey, so two
+  agents cannot tell they are talking to the same person. Approvals are encrypted, not public grants.
+- **Agent writes are quarantined.** When Sage saves "I'm vegetarian", your vault writes it for you, credited to Sage.
+  Other agents do not see an agent's proposals unless you write them yourself. Shared memory is how one bad agent
+  would poison every other agent's context, so it can't here.
+- **Encrypted end to end, gasless.** Keys come from your passkey (WebAuthn PRF via Mera). Monad stores only
+  ciphertext. Your vault signs EIP-712 requests and a relayer pays gas.
+- **Offline access when you choose it.** Agents that must work while you are away can still be given a key to a
+  folder (expiring, revocable with key rotation). The consent screen warns that such an agent can keep copies.
 
 Built solo for the Monad Metropolis hackathon, Trust, Identity & AI Infrastructure track.
 
@@ -21,40 +34,48 @@ Built solo for the Monad Metropolis hackathon, Trust, Identity & AI Infrastructu
 | | |
 |---|---|
 | Vault | `<vault URL after deployment>` (locally: http://localhost:3100) |
-| Sage (assistant, can save memories) | `<sage URL>` (locally: http://localhost:3201) |
+| Sage (assistant, can propose memories) | `<sage URL>` (locally: http://localhost:3201) |
 | Wayfarer (trip planner, read-only) | `<wayfarer URL>` (locally: http://localhost:3202) |
 | Demo video | `<link>` |
 
-The demo flow: open Sage, click **Connect memory**, create a vault with your passkey and approve. Tell Sage
-"I'm vegetarian and allergic to peanuts". It saves both onchain (you see the transactions). Open Wayfarer, connect
-read-only: it plans a trip that already avoids peanuts. Revoke Wayfarer in the vault and it immediately forgets.
+The demo flow:
+1. Open Sage, click **Connect your memory**, create a vault with your passkey and approve.
+2. Unlock the vault strip that appears in Sage.
+3. Tell Sage "I'm vegetarian and allergic to peanuts". The vault saves both onchain, credited to Sage, and the strip
+   shows each save.
+4. Ask "what do you know about me?". Sage has to ask for a full read, and the strip and your vault's Reads tab
+   show it.
+5. Open Wayfarer and connect it read-only. Each message shares only what is relevant.
+6. Tap Revoke in the strip. The next reply has no memory at all.
 
 ## How it works
 ```
- passkey (WebAuthn PRF)
-        |  HKDF-SHA256
-        v
- vault account key ---- folder keys (per label, per epoch)
-        |                      |  AES-256-GCM, AAD binds chain/registry/owner/folder/epoch
-        |                      v
-        |              ciphertext entries  ---------->  MemoryRegistry on Monad  <---- agent writes (operator)
-        |                      |                              |    ^
-        | X25519 ECIES wrap of the folder key                 |    | grants, wraps, epochs
-        v                      v                              v    |
-  grant to ERC-8004 agent  (expiry, read | readwrite)   Envio HyperIndex -> GraphQL -> SDK (chain-verified)
+ agent app page (wayfarer)                               your vault (another origin)
+ +-------------------------------------+                +-------------------------------------+
+ | chat                                |  postMessage   | /bridge strip (your passkey session)|
+ |  "plan dinner"  -- disclose(msg) -->|--------------->|  approved folders only              |
+ |               <-- ["allergic to.."]-|<---------------|  select relevant, log the read      |
+ |  POST /api/chat {messages, shown}   |                |  propose -> owner-signed write      |
+ +----------------|--------------------+                +-----------------|-------------------+
+                  v                                                         v
+  agent server (agent-kit, no keys, no chain reads)         MemoryRegistry on Monad: ciphertext only
+  KIMI tool loop; recall/remember come back to the page      (memories, encrypted approvals, encrypted log)
+  as {pending, continuation} (HMAC-sealed, 120 s)            Envio HyperIndex -> GraphQL -> SDK
 ```
-- **`MemoryRegistry`** (Solidity): namespaces, append-only entries, grants with expiry and scope, key wraps, epoch
-  rotation on revoke, a gasless EIP-712 relay, and ERC-8004-aware agent keys (a key set by a previous token holder is
-  never trusted).
-- **SDK** (`@engram/sdk`): `EngramOwner` (vault side: remember, recall, grant, revoke), `EngramAgent` (agent side:
-  inbox, recall, remember), `connectEngram` (app-to-vault consent popup) and `verifyAppSession`. Every key wrap the
-  indexer reports is checked against the transaction receipt before use, so a lying indexer cannot hand an agent a
-  wrong key.
+- **Keys:** passkey PRF -> HKDF-SHA256 -> account key, folder keys per epoch, and one pairwise identity per agent.
+  Entries are AES-256-GCM with AAD binding chain, registry, owner, folder and epoch.
+- **`MemoryRegistry`** (Solidity): namespaces, append-only entries, a gasless EIP-712 relay, and for offline access
+  grants with expiry and scope, X25519 key wraps, epoch rotation on revoke, and ERC-8004-aware agent keys.
+- **SDK** (`@engram/sdk`):
+  - Vault side: `EngramOwner` (`approve`, `disclose`, `propose`, `disclosures`, plus `remember`, `recall`, `grant`,
+    `revoke`) and `startBridge`.
+  - App side: `connectEngram`, `openVaultBridge` and `verifyAppSession`.
+  - Offline agents: `EngramAgent`.
 - **Indexer** (Envio HyperIndex): HyperSync for history and RPC for realtime. A transaction is queryable in 4-824 ms.
-- **Vault app** (Next.js): passkey onboarding, a ledger of your memories with which agent wrote each one, grants,
-  revoke, and the consent popup.
-- **Agent kit** (`@engram/agent-kit`): the server side of an Engram-connected agent, with KIMI tool calling
-  (`recall`, `remember`), app sessions, CSRF-safe routes, per-turn write caps and rate limits.
+- **Vault app** (Next.js): passkey onboarding, a ledger of memories with who wrote or proposed each one, approved
+  agents with revoke, a live Reads log, the consent popup, and the bridge strip.
+- **Agent kit** (`@engram/agent-kit`): the server side of an Engram agent, with KIMI tool calling, app sessions,
+  CSRF-safe routes, per-turn write caps, rate limits, and the chain-free Disclosure engine.
 - **Demo agents** Sage and Wayfarer: one Next.js app, two personas, registered as ERC-8004 agents #1965 and #1966.
 
 ## Why Monad

@@ -9,18 +9,18 @@ const REPO = "https://github.com/Aral-549/hippo";
 
 const steps = [
   ["One passkey", "Face ID, Touch ID, or your phone. No seed phrase, no extension, no email code. The same passkey opens your vault on every device."],
-  ["AI apps ask first", "An assistant or planner requests one folder of your memory, for a set time. You see who is asking, verified onchain, and approve it here."],
-  ["Take it back", "Revoke any app in one tap. The folder key rotates, so it can no longer read anything you add afterwards."],
+  ["Agents ask, the vault answers", "An approved assistant never gets a key. For each message it asks your vault, which shares only what is relevant from the folders you chose, and logs every read."],
+  ["Take it back", "Revoke any app in one tap. Your vault simply stops answering it, starting with the next message."],
 ] as const;
 
 const snippet = [
-  ["c", "// in your app: ask the user for one folder"],
+  ["c", "// in your app: ask the user to approve one folder"],
   ["k", "const { sessionProof } = await connectEngram({"],
   ["v", '  vaultUrl, agentId, labels: ["preferences"], scope: "read",'],
   ["k", "});"],
-  ["c", "// on your server: verify, then read only what was granted"],
-  ["k", "const owner = await verifyAppSession(proof, opts);"],
-  ["k", "const { entries } = await agent.recall(owner, nsId);"],
+  ["c", "// per message: the user's vault shares only what is relevant"],
+  ["k", "const vault = openVaultBridge({ vaultUrl, agentId, mount });"],
+  ["k", "const { entries } = await vault.disclose(userMessage);"],
 ] as const;
 
 export function Onboarding({ locked = false }: { locked?: boolean }) {
@@ -78,8 +78,9 @@ export function Onboarding({ locked = false }: { locked?: boolean }) {
             )}
           </h1>
           <p className="settle mt-7 max-w-xl text-lg leading-relaxed text-ink-soft" style={{ animationDelay: "650ms" }}>
-            Your assistant learns you once. Other AI apps can read the parts you allow, and nothing else. Every memory is encrypted on
-            your device before it is stored on Monad, so no company, including us, can read it.
+            Your assistant learns you once. Other AI apps ask your vault and get only what is relevant to the question, never a key,
+            and every read is logged. Memory is encrypted on your device before it is stored on Monad, so no company, including us,
+            can read it.
           </p>
           <div className="settle mt-9" style={{ animationDelay: "800ms" }}>
             {actions}
@@ -120,8 +121,8 @@ export function Onboarding({ locked = false }: { locked?: boolean }) {
                 Give your agent a memory your users <em className="text-seal">trust</em>.
               </h2>
               <p className="mt-5 max-w-md leading-relaxed text-ink-soft">
-                Your agent is an ERC-8004 identity. Users approve it per folder, and it reads memory with three calls. No user database to
-                secure, no plaintext to store. About 15 minutes to integrate.
+                Your agent is an ERC-8004 identity. Users approve it per folder; it asks their vault for what is relevant, so you hold no
+                keys, no user database, and no plaintext. Your server never touches the chain.
               </p>
               <a href={`${REPO}/blob/main/docs/INTEGRATE.md`} target="_blank" rel="noreferrer" className="btn btn-ghost lift mt-7 px-5 py-3">
                 Read the integration guide

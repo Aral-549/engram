@@ -7,9 +7,9 @@ import { Seal } from "./Seal";
 type Row = { who: string; what: string; meta: string; tone: "you" | "agent" | "read" | "revoke" };
 const ROWS: Row[] = [
   { who: "You", what: "Vegetarian, no eggs either", meta: "#41 · sealed on Monad", tone: "you" },
-  { who: "Sage", what: "Allergic to peanuts", meta: "#42 · written by Sage", tone: "agent" },
-  { who: "Wayfarer", what: "can read preferences", meta: "approved for 7 days", tone: "read" },
-  { who: "You", what: "revoked Wayfarer", meta: "folder key rotated", tone: "revoke" },
+  { who: "Sage", what: "Allergic to peanuts", meta: "#42 · proposed by Sage", tone: "agent" },
+  { who: "Wayfarer", what: "asked \u201cdinner plans?\u201d, shared 1", meta: "relevant only · logged", tone: "read" },
+  { who: "You", what: "revoked Wayfarer", meta: "vault stops answering", tone: "revoke" },
 ];
 const STEP_MS = 1700;
 
@@ -61,7 +61,7 @@ export function LedgerSpecimen() {
         ))}
       </ol>
       <p className="mt-5 font-mono text-[11px] leading-relaxed text-ink-soft">
-        Ciphertext only, onchain. Readable by you, and by the agents you approve, until you say stop.
+        Ciphertext only, onchain. Agents never hold a key: they ask, your vault answers with what is relevant, and logs it.
       </p>
     </figure>
   );
