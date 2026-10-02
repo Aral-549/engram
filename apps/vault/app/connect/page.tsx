@@ -62,6 +62,20 @@ function Consent() {
     const s = session ?? (await (how === "new" ? signUp() : signIn()));
     if (!s) return;
     setPhase("granting");
+    if (req.mode === "disclosure") {
+      // Disclosure mode: no key leaves the vault. An encrypted approval is written; the app gets a pairwise
+      // identity and must ask this vault (through /bridge) for each answer (contracts/disclosure.md D1, D2).
+      const r = await run((x) => x.approve(req.agentId, { origin: req.origin, labels: req.labels, scope: req.scope, expiresInSec: req.expiresInSec }));
+      const proof = r ? await run((x) => x.signAppSession({ agentId: req.agentId, origin: req.origin, ttlSec: Math.min(req.expiresInSec, 30 * 86400), pairwise: true })) : undefined;
+      if (!r || !proof) {
+        setPhase("review");
+        return;
+      }
+      reply({ ok: true, owner: r.pairwiseOwner, granted: req.labels, txHash: r.txHash, sessionProof: proof, mode: "disclosure" });
+      setPhase("done");
+      setTimeout(() => window.close(), 1400);
+      return;
+    }
     // Sign the app-session proof first (prompt-free, in-session): if it fails, nothing has been granted yet.
     const sessionProof = await run((x) => x.signAppSession({ agentId: req.agentId, origin: req.origin, ttlSec: Math.min(req.expiresInSec, 30 * 86400) }));
     if (!sessionProof) {
@@ -106,7 +120,11 @@ function Consent() {
         <div className="settle text-center">
           <Seal size={44} className="seal-stamp mx-auto" />
           <h1 className="mt-4 font-display text-3xl">Access granted</h1>
-          <p className="mt-2 text-ink-soft">{name} can now read {req.labels.join(", ")}. Revoke it any time in your vault.</p>
+          <p className="mt-2 text-ink-soft">
+            {req.mode === "disclosure"
+              ? `${name} can now ask your vault about ${req.labels.join(", ")}. It never gets a key, and every read appears in your vault.`
+              : `${name} can now read ${req.labels.join(", ")}. Revoke it any time in your vault.`}
+          </p>
         </div>
       ) : (
         <>
@@ -128,6 +146,13 @@ function Consent() {
             <Row k="Folders">{req.labels.map((l) => <span key={l} className="mr-2 font-mono">{l}</span>)}</Row>
             <Row k="Permission">{req.scope === "readwrite" ? "Read, and add new memories" : "Read only"}</Row>
             <Row k="For">{duration(req.expiresInSec)}, or until you revoke it</Row>
+            <Row k="How">
+              {req.mode === "disclosure" ? (
+                <span><span className="font-medium text-seal">It never gets a key.</span> It asks your vault while you chat, and only the relevant memories are shared. Every read appears in your vault.</span>
+              ) : (
+                <span className="text-rust">Offline access: it gets a key to these folders, can read them without you, and can keep copies.</span>
+              )}
+            </Row>
           </div>
 
           {!req.originVerified ? (
@@ -136,8 +161,10 @@ function Consent() {
             </p>
           ) : null}
           <p className="mt-4 text-xs leading-relaxed text-ink-soft">
-            Approved apps send what they read to their AI model provider to answer you. Revoking stops access to anything you add later;
-            what was already read cannot be un-shared.
+            Approved apps send what they are shown to their AI model provider to answer you.
+            {req.mode === "disclosure"
+              ? " Revoking stops all further reads at once; what was already shown cannot be un-shared."
+              : " Revoking stops access to anything you add later; what was already read cannot be un-shared."}
           </p>
 
           <div className="mt-6 flex flex-col gap-2">

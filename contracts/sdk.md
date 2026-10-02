@@ -168,14 +168,38 @@ Owner (vault origin)
   rules in disclosure.md); `session.propose(agentId, origin, { kind, text, label? })` -> `{ seq, txHash }`.
 - `session.disclosures({ agentId? })` -> decrypted log entries, newest first.
 
-Vault bridge (vault origin): `startBridge({ session, agentId, window })` answers the `postMessage` protocol and
-returns `{ stop() }`.
+- `session.recallAll(label)` -> like `recall`, but also returns v2 agent-proposed memories, each with `src: { agent }`.
+- `session.flushLogs()` -> resolves once every queued log append has been written (or has failed and been re-queued).
+- New error codes: `NOT_APPROVED`, `EXPIRED`, `BAD_REQUEST`, `RATE_LIMITED`, `READ_ONLY`, `QUOTA`, `VAULT_LOCKED`,
+  `BRIDGE_TIMEOUT`.
+- Policy cache: `disclose` and `propose` re-read the `engram-policy` folder when the cached copy is older than 3 s
+  (session clock). `approve` and `disapprove` update the cache immediately.
+- Quota: at most 20 `propose` per agent per 24 h per session (`QUOTA`). Rate limit: at most 60 `disclose` per agent
+  per 10 min (`RATE_LIMITED`).
+
+Vault bridge (vault origin): `startBridge({ session: () => OwnerSession | undefined, agentId, window })` answers the
+`postMessage` protocol and returns `{ stop(), refresh() }`. An optional `onEvent` callback feeds the vault's own bridge UI
+(live reads and writes); it is never sent to the app. `window` is `{ parent, addEventListener, removeEventListener }`.
+Protocol (`v: 1`):
+- request, app to vault: `{ type: "engram:bridge:req", v: 1, id, op: "disclose" | "propose" | "status", args }`.
+  It is answered only if `event.source === window.parent`, and, when unlocked, only if `event.origin` equals the
+  approved policy origin.
+- reply, vault to app: `{ type: "engram:bridge:res", v: 1, id, ok: true, ...result }` or `{ ..., ok: false, code }`,
+  posted to `event.origin` exactly. A locked bridge answers `VAULT_LOCKED` (no data, no policy lookup).
+- status push: `{ type: "engram:bridge:status", v: 1, state: "ready" }`, sent only while unlocked and only to the
+  approved origin (a locked bridge cannot know that origin). Call `refresh()` on the bridge handle after unlock. Apps
+  learn "locked" from `VAULT_LOCKED` replies or the `status` op.
+- The app client waits for the iframe's `load` event before sending its first request.
 
 App client
 - `connectEngram({ ..., mode?: "disclosure" | "offline" })`, default `"disclosure"`. Disclosure replies carry
-  `mode` and the pairwise `owner`; offline keeps today's behaviour.
-- `openVaultBridge({ vaultUrl, agentId, mount: HTMLElement })` -> `{ status(), disclose(query, { mode?, round? }), propose(entry), onStatus(cb), close() }`.
-  Request ids are random; replies are matched by id with a 10 s timeout (`BRIDGE_TIMEOUT`).
+  `mode` and the pairwise `owner`; offline keeps today's behaviour. The popup URL carries `mode=`. For links made
+  before this parameter existed, `parseConnectRequest` treats an absent `mode` as `"offline"`; any other value is
+  `INPUT_INVALID`.
+- `openVaultBridge({ vaultUrl, agentId, mount?, frame?, window?, timeoutMs? })` -> `{ status(), disclose(query, { mode?, round? }), propose(entry), onStatus(cb), close() }`.
+  Creates the iframe in `mount` (or uses the injected `frame` in tests). Request ids are random. Replies are
+  accepted only from the vault origin and `frame.contentWindow`, are matched by id, and time out after
+  `timeoutMs` (default 10 s) with `BRIDGE_TIMEOUT`.
 
 | # | Input | Expected output | Notes |
 |---|---|---|---|
@@ -184,6 +208,8 @@ App client
 | 50 | `disclose` when no policy, or `disapprove`d, or expired | `NOT_APPROVED` / `EXPIRED`; nothing returned | |
 | 51 | `openVaultBridge` reply with a mismatched id, a wrong origin, or a non-object | ignored; the request still times out with `BRIDGE_TIMEOUT` | |
 | 52 | `JSON.stringify` of a bridge client or the session after `pairwise()` | no key material | |
+| 53 | `parseConnectRequest` with no `mode`, `mode=disclosure`, `mode=offline`, `mode=keys` | `offline`, `disclosure`, `offline`, `INPUT_INVALID` | old links keep working |
+| 54 | `connectEngram` default | popup URL has `mode=disclosure`; a reply with `mode: "disclosure"` resolves with `mode` | |
 
 ## Edge cases that must be covered
 - Two vault tabs: both sessions valid; a relay that fails on a stale nonce is re-signed once with a fresh nonce.

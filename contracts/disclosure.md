@@ -47,11 +47,11 @@ Design rationale, transport spike and threat model: [`docs/design/disclosure.md`
 - Log entry (encrypted, owner-only): `{ agent, origin, q, mode, refs: [{l, s}], n, round }`.
 
 ## Selection rules (`relevant` mode)
-1. Normalise the query and each entry text: NFKC, lowercase. Split on runs of characters that are not `\p{L}`
-   or `\p{N}`. Drop tokens shorter than 2 characters and the fixed stopword list:
+1. Normalise the query and each entry text: NFKC, lowercase. Split on runs of characters that are not `\p{L}`,
+   `\p{M}` or `\p{N}` (combining marks stay inside words, so Devanagari vowel signs do not split a word). Drop tokens shorter than 2 characters and the fixed stopword list:
    `a an and are about any can do for i in is it know me my of on or please tell the to what with you your`.
-2. A query token matches an entry token when their common prefix is at least `min(5, len(shorter))` and the
-   shorter token is at least 3 characters (`allergy` matches `allergic`, `veg` matches `vegetarian`, `tea`
+2. A query token matches an entry token when they are equal, or when their common prefix is at least
+   `min(5, len(shorter))` and the shorter token is at least 3 characters (`allergy` matches `allergic`, `veg` matches `vegetarian`, `tea`
    matches `team`).
 3. Score = the number of distinct query tokens that match at least one token of the entry. Keep entries with a
    score of 1 or more, order by score descending then newest first, and return at most 8.
@@ -96,12 +96,14 @@ Design rationale, transport spike and threat model: [`docs/design/disclosure.md`
 | D26 | more than 60 `disclose` requests from one agent in 10 minutes | `RATE_LIMITED` (vault side), logged once | |
 | D27 | the log append fails (relay down) | the disclosure still answers; the log entry is queued in the bridge and retried; the UI shows "log pending" | the user's own audit, eventually consistent |
 | D28 | the agent page draws a fake vault UI instead of the real iframe | it cannot unlock: the passkey prompt is bound to the vault rpId, and a fake can obtain no PRF; it can only lie about reads, which the main vault log contradicts | see design note |
+| D29 | a folder read during `disclose` is incomplete (the indexer trails the chain, e.g. right after a `propose`) | the vault re-reads for up to ~3 s until complete, then answers with what it has | same rule as apps.md A10 |
+| D30 | the owner revokes on this device; more than 3 s later the policy cache refreshes from a source that has not indexed the revoke yet | `NOT_APPROVED`: a refresh never replaces a cached policy with an older one (higher `seq` wins), and an incomplete policy folder is re-read briefly | revocation is never undone by lag (BUGLOG D-3) |
 
 ## Edge cases that must be covered
 - An unlocked bridge idle for 15 minutes locks itself (`SESSION_IDLE_MS`) and answers `VAULT_LOCKED`.
 - Two tabs of the same agent each have their own bridge and unlock; both obey the same policy.
-- Unicode queries (Hindi, Japanese) tokenise on `\p{L}\p{N}`; scripts without spaces fall back to whole-run
-  tokens (documented weakness).
+- Unicode queries (Hindi, Japanese) tokenise on `\p{L}\p{M}\p{N}`; scripts without spaces (Japanese, Chinese) fall
+  back to whole-run tokens, so they match only by shared prefix (documented weakness).
 - The latest policy entry wins, even if an older one appears later in indexer order: order by `seq`, not arrival.
 - `disclosed` sent to the server is capped at 20 entries and 4000 characters each; extra entries are dropped.
 - Malformed messages to the bridge (non-object, missing `id`, huge strings) are ignored without a reply.
@@ -120,5 +122,6 @@ Agent server: `{ stage: "agent", op: "pending" | "continue", tool, round }`. Nev
 ## Status
 - [x] Drafted (2026-10-02)
 - [x] Reviewed by a human (2026-10-02: approved to proceed, no case changes requested)
-- [ ] Implementation matches this contract
-- [ ] Golden tests exist for every behavior case above
+- [x] Implementation matches this contract (2026-10-02; e2e on Monad testnet: tests/e2e/agents.e2e.spec.ts)
+- [ ] Golden tests exist for every behavior case above: all except D27 (log-append failure and retry) and D28
+  (fake vault UI, a property of WebAuthn rpId binding), which have no automated test yet

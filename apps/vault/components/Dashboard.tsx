@@ -1,5 +1,5 @@
 "use client";
-import type { GrantView, RecalledEntry } from "@engram/sdk";
+import type { GrantView, LogView, PolicyView, RecalledAnyEntry } from "@engram/sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { addLabel, discoverLabels, isValidLabel, type DiscoveredNamespace } from "@/lib/discover";
 import { addressUrl, expiresIn, relativeTime, shortAddr, txUrl, untilSettled } from "@/lib/engram";
@@ -8,7 +8,7 @@ import { Words } from "./Words";
 import { useSession } from "./SessionProvider";
 import { useAgentCards } from "./useAgentCards";
 
-type Tab = "memory" | "access";
+type Tab = "memory" | "access" | "reads";
 const KINDS = ["preference", "fact", "note"] as const;
 
 export function Dashboard() {
@@ -30,9 +30,9 @@ export function Dashboard() {
           <p className="mt-1 text-xs text-ink-soft">Monad testnet. Unlocked with your passkey.</p>
         </div>
         <nav className="flex gap-2 md:flex-col">
-          {(["memory", "access"] as Tab[]).map((t) => (
+          {(["memory", "access", "reads"] as Tab[]).map((t) => (
             <button key={t} onClick={() => setTab(t)} className={`btn px-3 py-2 text-left ${tab === t ? "bg-card border border-rule" : "border border-transparent hover:bg-card"}`}>
-              {t === "memory" ? "Memory" : "Who can read it"}
+              {t === "memory" ? "Memory" : t === "access" ? "Who can read it" : "Reads"}
             </button>
           ))}
         </nav>
@@ -47,7 +47,7 @@ export function Dashboard() {
             <button onClick={clearError} className="font-mono text-xs underline">dismiss</button>
           </div>
         ) : null}
-        {tab === "memory" ? <MemoryView /> : <AccessView />}
+        {tab === "memory" ? <MemoryView /> : tab === "access" ? <AccessView /> : <ReadsView />}
       </section>
     </main>
   );
@@ -169,14 +169,16 @@ function MemoryView() {
   );
 }
 
-function MemoryCard({ entry, delay }: { entry: RecalledEntry; delay: number }) {
-  const cards = useAgentCards(entry.byOwner ? [] : [entry.agentId.toString()]);
-  const author = entry.byOwner ? "You" : (cards[entry.agentId.toString()]?.name ?? `Agent #${entry.agentId}`);
+function MemoryCard({ entry, delay }: { entry: RecalledAnyEntry; delay: number }) {
+  // Disclosure-mode proposals are written by the vault (byOwner) on an agent's behalf: credit the agent (src).
+  const writer = entry.src ? entry.src.agent : entry.byOwner ? null : entry.agentId.toString();
+  const cards = useAgentCards(writer ? [writer] : []);
+  const author = writer ? (cards[writer]?.name ?? `Agent #${writer}`) : "You";
   return (
     <li className="index-card settle lift px-5 py-4 pl-12" style={{ animationDelay: `${delay}ms` }}>
       <p className="text-lg leading-[1.8rem]">{entry.text}</p>
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-ink-soft">
-        <span className={entry.byOwner ? "" : "text-seal"}>{entry.byOwner ? "Written by you" : `Written by ${author}`}</span>
+        <span className={writer ? "text-seal" : ""}>{!writer ? "Written by you" : entry.src ? `Proposed by ${author}` : `Written by ${author}`}</span>
         <span>{entry.kind}</span>
         <span>{relativeTime(entry.t)}</span>
         <a href={txUrl(entry.txHash)} target="_blank" rel="noreferrer" className="underline decoration-rule underline-offset-2 hover:text-ink">
@@ -190,6 +192,7 @@ function MemoryCard({ entry, delay }: { entry: RecalledEntry; delay: number }) {
 function AccessView() {
   const { run } = useSession();
   const [grants, setGrants] = useState<GrantView[] | null>(null);
+  const [policies, setPolicies] = useState<PolicyView[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async (expect?: (g: GrantView[]) => boolean) => {
@@ -197,14 +200,27 @@ function AccessView() {
     await run((s) => discoverLabels(s));
     const g = await run((s) => untilSettled(() => s.grants(), expect ?? (() => true)));
     if (g) setGrants(g);
+    const p = await run((s) => s.policies());
+    if (p) setPolicies(p);
   }, [run]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const cards = useAgentCards((grants ?? []).map((g) => g.agentId.toString()));
+  const approved = (policies ?? []).filter((p) => p.active && p.exp > Date.now());
+  const cards = useAgentCards([...(grants ?? []).map((g) => g.agentId.toString()), ...approved.map((p) => p.agentId.toString())]);
   const active = (grants ?? []).filter((g) => g.active);
+
+  async function disapprove(p: PolicyView) {
+    const id = `policy-${p.agentId}`;
+    setBusy(id);
+    // Also revoke any offline key grant this agent holds (contracts/apps.md "Disclosure mode in the apps").
+    await run((s) => s.disapprove(p.agentId));
+    for (const g of active.filter((x) => x.agentId === p.agentId && x.label)) await run((s) => s.revoke(g.label!, [g.agentId]));
+    setBusy(null);
+    await load();
+  }
   const past = (grants ?? []).filter((g) => !g.active);
 
   async function revoke(g: GrantView) {
@@ -224,7 +240,28 @@ function AccessView() {
       </p>
       <ul className="mt-8 space-y-4">
         {grants === null ? <li className="text-ink-soft">Checking access…</li> : null}
-        {grants && active.length === 0 ? <li className="text-ink-soft">No app can read your memory right now.</li> : null}
+        {grants && policies && active.length === 0 && approved.length === 0 ? <li className="text-ink-soft">No app can read your memory right now.</li> : null}
+        {approved.map((p) => {
+          const card = cards[p.agentId.toString()];
+          const id = `policy-${p.agentId}`;
+          return (
+            <li key={id} className="paper-card settle lift grid grid-cols-[1fr_auto] items-center gap-4 px-5 py-4">
+              <div>
+                <p className="font-medium">{card?.name ?? `Agent #${p.agentId}`}</p>
+                <p className="mt-0.5 text-sm text-ink-soft">Asks your vault while you chat. It never holds a key.</p>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs text-ink-soft">
+                  <span>folders: {p.labels.join(", ")}</span>
+                  <span className={p.scope === "readwrite" ? "text-rust" : "text-seal"}>{p.scope === "readwrite" ? "can ask and propose" : "can ask"}</span>
+                  <span>{p.origin}</span>
+                  <span>{expiresIn(BigInt(Math.floor(p.exp / 1000)))}</span>
+                </div>
+              </div>
+              <button className="btn btn-danger px-3 py-2 text-sm" disabled={busy === id} onClick={() => void disapprove(p)}>
+                {busy === id ? "Revoking…" : "Revoke"}
+              </button>
+            </li>
+          );
+        })}
         {active.map((g) => {
           const card = cards[g.agentId.toString()];
           const id = `${g.nsId}-${g.agentId}`;
@@ -260,6 +297,74 @@ function AccessView() {
           </ul>
         </details>
       ) : null}
+    </div>
+  );
+}
+
+function ReadsView() {
+  const { run } = useSession();
+  const [logs, setLogs] = useState<LogView[] | null>(null);
+  const [texts, setTexts] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    // Live: agents' reads are logged by the bridge in the background, so keep refreshing while this tab is open.
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      await load();
+      if (!stop) timer = setTimeout(() => void tick(), 4000);
+    };
+    void tick();
+    return () => {
+      stop = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run]);
+
+  async function load() {
+    {
+      const l = await run((s) => s.disclosures({}));
+      if (!l) return;
+      setLogs(l);
+      // Resolve each referenced entry to its text, from this device only (logs store references, not text).
+      const labels = [...new Set(l.flatMap((x) => x.refs.map((r) => r.label)))];
+      const m = new Map<string, string>();
+      for (const label of labels) {
+        const r = await run((s) => s.recallAll(label));
+        for (const e of r?.entries ?? []) m.set(`${label}:${e.seq}`, e.text);
+      }
+      setTexts(m);
+    }
+  }
+
+  const cards = useAgentCards([...new Set((logs ?? []).map((l) => l.agentId.toString()))]);
+  return (
+    <div className="max-w-3xl">
+      <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="Every read, by every agent"><Words>Every read, by every agent</Words></h2>
+      <p className="mt-2 text-ink-soft">Agents in Disclosure mode never hold your memory. Each time one asks, your vault answers with only what is relevant, and writes it here.</p>
+      <ol className="mt-8 space-y-3" aria-live="polite">
+        {logs === null ? <li className="text-ink-soft">Opening the log…</li> : null}
+        {logs && logs.length === 0 ? <li className="text-ink-soft">No agent has asked your vault yet.</li> : null}
+        {(logs ?? []).slice(0, 100).map((l, i) => {
+          const name = cards[l.agentId.toString()]?.name ?? `Agent #${l.agentId}`;
+          const shared = l.refs.map((r) => texts.get(`${r.label}:${r.seq}`) ?? `${r.label} #${r.seq}`);
+          return (
+            <li key={l.seq.toString()} className="paper-card settle px-5 py-3.5" style={{ animationDelay: `${Math.min(i, 12) * 35}ms` }}>
+              <p className="font-mono text-[11px] text-ink-soft">
+                <span className="text-seal">{name}</span>
+                <span className="mx-1.5 text-rule">/</span>
+                {l.mode === "write" ? "proposed a memory" : l.mode === "full" ? "asked for everything" : `asked "${l.q || "(empty)"}"`}
+                <span className="mx-1.5 text-rule">/</span>
+                {relativeTime(l.t)}
+              </p>
+              <p className={`mt-1 leading-snug ${l.n === 0 ? "text-ink-soft" : ""}`}>
+                {l.n === 0 ? "Nothing relevant, nothing shared." : `${l.mode === "write" ? "Saved" : `Shared ${l.n}`}: ${shared.join("; ")}`}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

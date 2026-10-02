@@ -44,7 +44,7 @@ Both agent apps are thin Next.js apps over one tested package:
   no state: each request re-verifies the proof and reads memory fresh (no plaintext cached between requests).
 - **Request hardening (review 2026-10-01, BUGLOG G1):** `/api/session` and `/api/chat` accept only
   `content-type: application/json` (media type exactly, parameters like `charset` allowed) with an `Origin` header equal to `APP_ORIGIN`; bodies are read with a hard cap
-  (session 4 KB, chat 64 KB) whether or not `content-length` is sent. The cookie is `HttpOnly; SameSite=Strict;
+  (session 4 KB, chat 160 KB, chat/continue 256 KB: Disclosure mode carries disclosed entries and a continuation) whether or not `content-length` is sent. The cookie is `HttpOnly; SameSite=Strict;
   Path=/`, `Secure` when `APP_ORIGIN` is https, and holds only the canonical proof fields (<= 1 KB, else rejected).
   `APP_ORIGIN` must be an exact origin or the server refuses to start.
 - **Turn budget (G2):** per chat turn at most 3 tool rounds, 3 `remember` writes, and 2 `recall` calls; extra calls

@@ -1,7 +1,7 @@
 // @engram/crypto -- implements contracts/crypto.md. Pure functions: no network, storage, or logging.
 export { EngramCryptoError, type EngramCryptoErrorCode } from "./errors.js";
 export type { BindingContext, Hex } from "./encoding.js";
-export { ROOT_SALT, deriveAccount, deriveAccountWith, deriveNamespaceId, deriveNamespaceKey, type OwnerAccount } from "./derive.js";
+export { ROOT_SALT, deriveAccount, deriveAccountWith, deriveNamespaceId, deriveNamespaceKey, derivePairwise, type OwnerAccount, type PairwiseIdentity } from "./derive.js";
 export {
   encryptEntry,
   decryptEntry,
@@ -12,3 +12,4 @@ export {
   type WrapParams,
 } from "./envelope.js";
 export { encodeEntry, parseEntry, type Entry, type EntryKind } from "./entry.js";
+export { encodeEntryV2, parseAnyEntry, type AnyEntry, type EntryV2, type LogEntry, type MemoryEntryV2, type PolicyEntry } from "./entry2.js";

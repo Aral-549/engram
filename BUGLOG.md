@@ -208,3 +208,24 @@ resolved -- it's just hidden until the next rewrite.
 - **Stage/module:** agent-kit `guardRequest`
 - **Regression case added:** `tests/golden/agent-kit/agent-kit.hardening.golden.test.ts` -- case A20
 - **Status:** fixed
+
+## 2026-10-02 -- D-1: Disclosure reads could miss a memory saved a moment earlier
+- **Symptom:** found while designing the Disclosure e2e: `disclose` read folders through the indexer, which trails the chain by ~1 s, so a proposal written just before the next message would be absent from the answer.
+- **Root cause:** the A10 bounded re-read existed in the agent server (offline mode) but not in the vault's `disclose`.
+- **Stage/module:** sdk `OwnerSession.disclose`
+- **Regression case added:** `tests/golden/disclosure/disclosure.lag.golden.test.ts` -- D29
+- **Status:** fixed
+
+## 2026-10-02 -- D-2: selection tokenizer would split Devanagari words
+- **Symptom:** the drafted rule split on characters outside `\p{L}\p{N}`, which cuts Hindi words at every vowel sign (combining marks), so "शाकाहारी" could never match itself.
+- **Root cause:** spec defect (contracts/disclosure.md selection rule 1), caught before implementation.
+- **Stage/module:** sdk `select.ts` / contract
+- **Regression case added:** `tests/golden/disclosure/selection.golden.test.ts` -- "normalises with NFKC ... non-Latin scripts"
+- **Status:** fixed
+
+## 2026-10-02 -- D-3: a revoke could be undone by indexer lag
+- **Symptom:** in the Disclosure e2e, after revoking Wayfarer in the bridge strip, the next message was still answered as approved (`revoked:false` in the agent log).
+- **Root cause:** when the 3 s policy cache expired, `loadPolicies` replaced it wholesale with a fresh read from the indexer, which had not indexed the revoke yet, so the older active policy came back.
+- **Stage/module:** sdk `OwnerSession.loadPolicies`
+- **Regression case added:** `tests/golden/disclosure/disclosure.revoke-lag.golden.test.ts` -- D30
+- **Status:** fixed

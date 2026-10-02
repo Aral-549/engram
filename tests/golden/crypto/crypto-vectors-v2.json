@@ -1,0 +1,45 @@
+{
+  "pairwise": [
+    {
+      "prf": "0101010101010101010101010101010101010101010101010101010101010101",
+      "agentId": "7",
+      "counter": 0,
+      "key": "360d916045828934b784698e092181d6b745a8ca8e7422f634efb72fc3becc3e",
+      "address": "0xb7bf7824bF5A1f3d860DE8Fd82361BA0171fd439"
+    },
+    {
+      "prf": "0101010101010101010101010101010101010101010101010101010101010101",
+      "agentId": "8",
+      "counter": 0,
+      "key": "4d6f41fd42d893d7355c9f0e587fe2c100b02e36f88da9ef1de66c4794fdd03f",
+      "address": "0x6e5E6D86317e2bA7241Fc02920F1C3f20e1381A9"
+    },
+    {
+      "prf": "0101010101010101010101010101010101010101010101010101010101010101",
+      "agentId": "1965",
+      "counter": 0,
+      "key": "0a1cea46042458afada457ce60bc137eefaa036609e764993721886fe405b2ef",
+      "address": "0x81c1dEed9A11cBF7dFC270cFa99537B2BFD52B30"
+    },
+    {
+      "prf": "0202020202020202020202020202020202020202020202020202020202020202",
+      "agentId": "7",
+      "counter": 0,
+      "key": "f3bc669cb02b358aa90f95d9689c90b01da81940b6e17c7f1806aa322c5154e7",
+      "address": "0xA0BfB3C2731C4BDb7C8840d1fbD8d16677F7Fb5f"
+    }
+  ],
+  "account_prf1": {
+    "counter": 0,
+    "key": "9fc38f443ad8ffaa4f675eff8f0d5853112cb5b7448a8c63bb04d1124d556971",
+    "address": "0x65Bf15678d006194b7DCbfb5B958B8cb0b2f060e"
+  },
+  "entries_v2": [
+    "{\"v\":2,\"t\":1790000000000,\"kind\":\"preference\",\"text\":\"prefers window seats\",\"src\":{\"agent\":\"7\"}}",
+    "{\"v\":2,\"t\":1790000000001,\"kind\":\"fact\",\"text\":\"शाकाहारी, 花生アレルギー\",\"src\":{\"agent\":\"1965\"}}",
+    "{\"v\":2,\"t\":1790000000002,\"kind\":\"policy\",\"agent\":\"7\",\"origin\":\"https://app.x\",\"labels\":[\"preferences\",\"travel\"],\"scope\":\"read\",\"exp\":1790604800000,\"active\":true}",
+    "{\"v\":2,\"t\":1790000000003,\"kind\":\"policy\",\"agent\":\"7\",\"origin\":\"http://localhost:3202\",\"labels\":[\"preferences\"],\"scope\":\"readwrite\",\"exp\":0,\"active\":false}",
+    "{\"v\":2,\"t\":1790000000004,\"kind\":\"log\",\"agent\":\"7\",\"origin\":\"https://app.x\",\"q\":\"Plan dinner, any allergy concerns?\",\"mode\":\"relevant\",\"refs\":[{\"l\":\"preferences\",\"s\":\"1\"}],\"n\":1,\"round\":0}",
+    "{\"v\":2,\"t\":1790000000005,\"kind\":\"log\",\"agent\":\"8\",\"origin\":\"https://app.x\",\"q\":\"\",\"mode\":\"full\",\"refs\":[],\"n\":0,\"round\":3}"
+  ]
+}

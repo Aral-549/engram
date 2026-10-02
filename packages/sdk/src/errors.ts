@@ -15,7 +15,16 @@ export type EngramErrorCode =
   | "TX_REVERTED"
   | "SOURCE_UNAVAILABLE"
   | "POPUP_BLOCKED"
-  | "USER_CANCELLED";
+  | "USER_CANCELLED"
+  // Disclosure mode (contracts/disclosure.md)
+  | "NOT_APPROVED"
+  | "EXPIRED"
+  | "BAD_REQUEST"
+  | "RATE_LIMITED"
+  | "READ_ONLY"
+  | "QUOTA"
+  | "VAULT_LOCKED"
+  | "BRIDGE_TIMEOUT";
 
 /** Every SDK failure is an EngramError with a stable code (contracts/sdk.md). Messages never carry key material. */
 export class EngramError extends Error {

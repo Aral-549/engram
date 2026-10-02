@@ -25,7 +25,14 @@ export {
   type GrantView,
   type RecallResult,
   type RecalledEntry,
+  type PolicyView,
+  type LogView,
+  type RecalledAnyEntry,
+  POLICY_LABEL,
+  LOG_LABEL,
 } from "./owner.js";
+export { selectEntries, selectCandidates, tokens, type Candidate, type DisclosedEntry, type DisclosureMode } from "./select.js";
+export { startBridge, openVaultBridge, type VaultBridge, type BridgeState, type BridgeEvent } from "./bridge.js";
 export { EngramAgent, isCanonicalX25519, type InboxItem } from "./agent.js";
 export {
   connectEngram,
@@ -36,5 +43,6 @@ export {
   type ConnectMessage,
   type ConnectRequest,
   type ConnectResult,
+  type ConnectMode,
 } from "./connect.js";
 export { verifyAppSession, exactOrigin, APP_SESSION_MAX_TTL_SEC, type AppSessionProof } from "./appsession.js";

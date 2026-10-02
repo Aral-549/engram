@@ -15,8 +15,12 @@ type Req = { messages: Msg[]; tools?: { function: { name: string } }[] };
 const STATEMENT = /\b(i am|i'm|im|i prefer|i like|i love|i hate|i don't|i do not|i never|i always|my [a-z]+ is|i'm allergic|i am allergic|allergic to|i live in|i work)\b/i;
 
 function memoriesIn(messages: Msg[]): string[] {
-  // The memory block is its own system message starting with the tag (the rules message only mentions the tag).
-  const block = messages.find((m) => m.role === "system" && typeof m.content === "string" && m.content.startsWith("<user_memory>"))?.content ?? "";
+  // Memory arrives as its own system message, or (Disclosure mode) as recall tool results; both start with the tag.
+  const blocks = messages.filter((m) => (m.role === "system" || m.role === "tool") && typeof m.content === "string" && m.content.startsWith("<user_memory>"));
+  return [...new Set(blocks.flatMap((b) => linesOf(String(b.content))))];
+}
+
+function linesOf(block: string): string[] {
   const inner = block.slice(block.indexOf("<user_memory>") + 13, block.lastIndexOf("</user_memory>"));
   return inner
     .split("\n")
@@ -34,7 +38,9 @@ function respond(req: Req) {
   const msgs = req.messages ?? [];
   const lastUser = [...msgs].reverse().find((m) => m.role === "user")?.content ?? "";
   const lastIsTool = msgs.at(-1)?.role === "tool";
+  const lastToolWasRecall = lastIsTool && String(msgs.at(-1)?.content ?? "").startsWith("<user_memory>");
   const canRemember = (req.tools ?? []).some((t) => t.function.name === "remember");
+  const canRecall = (req.tools ?? []).some((t) => t.function.name === "recall");
   const persona = String(msgs[0]?.content ?? "").startsWith("You are Wayfarer") ? "planner" : "assistant";
   const known = memoriesIn(msgs);
   const revoked = String(msgs[0]?.content ?? "").includes("revoked your access");
@@ -46,7 +52,11 @@ function respond(req: Req) {
       return { tool_calls: fresh.map((text, i) => ({ id: `dev_${Date.now()}_${i}`, type: "function", function: { name: "remember", arguments: JSON.stringify({ kind: "preference", text }) } })) };
     }
   }
-  if (lastIsTool) return { content: "[dev model] Got it. I saved that to your own memory; you can see it, and revoke me, in your vault." };
+  // Disclosure mode: nothing relevant was shared up front, so ask the vault for everything (it logs a full read).
+  if (canRecall && !lastIsTool && known.length === 0 && /what do you know|about me/i.test(lastUser)) {
+    return { tool_calls: [{ id: `dev_${Date.now()}_r`, type: "function", function: { name: "recall", arguments: JSON.stringify({ all: true }) } }] };
+  }
+  if (lastIsTool && !lastToolWasRecall) return { content: "[dev model] Got it. I saved that to your own memory; you can see it, and revoke me, in your vault." };
   if (revoked) return { content: "[dev model] You revoked my access to your memory, so I don't know your preferences anymore. What should I keep in mind?" };
   if (/what do you know|about me/i.test(lastUser)) {
     return { content: known.length ? `[dev model] From what you shared: ${known.join("; ")}.` : "[dev model] You haven't shared anything with me yet." };

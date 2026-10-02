@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 // real MemoryRegistry bytecode (chain/out), so run `forge build` in chain/ first.
 export default defineConfig({
   test: {
-    include: ["../../tests/golden/sdk/**/*.test.ts", "../../tests/adversarial/sdk/**/*.test.ts", "src/**/*.test.ts"],
+    include: ["../../tests/golden/sdk/**/*.test.ts", "../../tests/golden/disclosure/**/*.test.ts", "../../tests/adversarial/sdk/**/*.test.ts", "../../tests/adversarial/disclosure/**/*.test.ts", "src/**/*.test.ts"],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     fileParallelism: false,

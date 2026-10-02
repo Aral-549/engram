@@ -72,3 +72,21 @@ export function deriveNamespaceKey(prfOutput: Uint8Array, label: string, epoch: 
   assertLabel(label);
   return hkdf32(prf, `engram.v1/nskey/${label}/${toEpoch(epoch).toString(10)}`);
 }
+
+export type PairwiseIdentity = { key: Uint8Array; address: EvmAddress; counter: number };
+const UINT256_MAX = (1n << 256n) - 1n;
+
+/**
+ * Per-agent pseudonymous secp256k1 identity (contracts/crypto.md, Disclosure mode). Stable across devices, distinct
+ * per agent, never used onchain. An agent sees only this address, so agents cannot correlate one user.
+ */
+export function derivePairwise(prfOutput: Uint8Array, agentId: bigint): PairwiseIdentity {
+  if (typeof agentId !== "bigint" || agentId < 0n || agentId > UINT256_MAX) throw new EngramCryptoError("INPUT_INVALID", "agentId must be a uint256 bigint");
+  const prf = takePrf(prfOutput);
+  try {
+    const a = deriveAccountWith((counter) => hkdf32(prf, `engram.v1/pairwise/secp256k1/${agentId.toString(10)}/${counter}`));
+    return { key: a.accountKey, address: a.owner, counter: a.counter };
+  } finally {
+    prf.fill(0);
+  }
+}

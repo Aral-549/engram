@@ -78,6 +78,8 @@ for (const p of personas) {
     `AGENT_ID=${agentId}`,
     `AGENT_X25519_PRIVATE_KEY=${toHex(xPriv)}`,
     `AGENT_OPERATOR_KEY=${opKey}`,
+    `AGENT_MODE=${prev.AGENT_MODE ?? "disclosure"}`,
+    `CONTINUATION_SECRET=${prev.CONTINUATION_SECRET ?? Buffer.from(globalThis.crypto.getRandomValues(new Uint8Array(32))).toString("hex")}`,
     `INDEXER_URL=${prev.INDEXER_URL ?? "http://localhost:8090/v1/graphql"}`,
     `KIMI_BASE_URL=${prev.KIMI_BASE_URL ?? "https://api.moonshot.ai/v1"}`,
     `KIMI_API_KEY=${prev.KIMI_API_KEY ?? ""}`,

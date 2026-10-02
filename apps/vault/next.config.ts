@@ -6,7 +6,18 @@ const config: NextConfig = {
   async headers() {
     return [
       {
-        source: "/(.*)",
+        // Disclosure-mode bridge: the only page agent apps may frame (contracts/apps.md V6, V7). It has no approve
+        // or confirm controls, and answers only the approved origin.
+        source: "/bridge",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Content-Security-Policy", value: "frame-ancestors *" },
+          { key: "Permissions-Policy", value: "publickey-credentials-get=*, publickey-credentials-create=*" },
+        ],
+      },
+      {
+        source: "/((?!bridge$).*)",
         headers: [
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },

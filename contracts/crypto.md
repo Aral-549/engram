@@ -119,6 +119,7 @@ Same canonical, strict, 2048-byte rules as v1. Unknown keys are rejected.
 - memory: `{"v":2,"t":<ms>,"kind":"fact"|"preference"|"note","text":<1..1500 cp>,"src":{"agent":"<decimal uint256>"}}`
   (v2 memory **requires** `src`; owner-written memories stay v1)
 - policy: `{"v":2,"t":<ms>,"kind":"policy","agent":"<id>","origin":<exact origin>,"labels":[<1..8 labels>],"scope":"read"|"readwrite","exp":<ms>,"active":<bool>}`
+- `agent` and `s` (seq) are decimal strings: `^(0|[1-9][0-9]*)$`, value < 2^256. Labels follow the label rule above. Key order is exactly as written here.
 - log: `{"v":2,"t":<ms>,"kind":"log","agent":"<id>","origin":<origin>,"q":<0..200 cp>,"mode":"relevant"|"full"|"write","refs":[{"l":<label>,"s":"<seq>"}],"n":<int 0..20>,"round":<0..3>}` (refs <= 20)
 
 | # | Input | Expected output | Notes |
@@ -126,7 +127,7 @@ Same canonical, strict, 2048-byte rules as v1. Unknown keys are rejected.
 | 17 | prf = 32 x `0x01`, `pairwise(7)`, `pairwise(8)` | equal vector V3 (Python reference); all differ from `accountKey` | independent impl |
 | 18 | same prf on "another device" | `pairwise(7)` byte-identical | stable |
 | 19 | `parseAnyEntry` of each v2 example above | returns it; `parseEntry` of the same bytes -> `ENTRY_INVALID` | v1 untouched |
-| 20 | v2 memory without `src`, policy with `labels: []` or 9 labels, log with 21 refs, policy with non-exact origin, `agent` with a leading zero or non-decimal | `ENTRY_INVALID` | strict |
+| 20 | v2 memory without `src`; policy with `labels: []`, 9 labels, a duplicate label, or a reserved `engram-*` label; log with 21 refs or `n` > 20; policy with a non-exact origin; `agent` or `s` with a leading zero, a sign, or non-decimal; key order changed; unknown key | `ENTRY_INVALID` | strict, canonical |
 | 21 | `encodeEntryV2` of a 2049-byte document | `INPUT_INVALID` | size |
 
 ## Explicitly out of scope

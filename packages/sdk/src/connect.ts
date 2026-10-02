@@ -20,8 +20,11 @@ export type ConnectRequest = {
   origin: string;
   /** True when the agent's ERC-8004 card lists an endpoint on `origin`. Show a warning when false. */
   originVerified: boolean;
+  /** "disclosure": the agent asks, the vault answers (no key). "offline": a key grant (contracts/disclosure.md). */
+  mode: ConnectMode;
 };
-export type ConnectResult = { owner: Hex; granted: string[]; txHash: Hex; sessionProof?: AppSessionProof };
+export type ConnectMode = "disclosure" | "offline";
+export type ConnectResult = { owner: Hex; granted: string[]; txHash: Hex; sessionProof?: AppSessionProof; mode?: ConnectMode };
 export type ConnectMessage = ({ ok: true } & ConnectResult) | { ok: false; code: string };
 /** ERC-8004 agent card (subset). */
 export type AgentCard = { name?: string; description?: string; image?: string; endpoints?: { name?: string; endpoint: string }[] };
@@ -55,6 +58,8 @@ export function connectEngram(opts: {
   labels: string[];
   scope: GrantScope;
   expiresInSec: number;
+  /** Default "disclosure". */
+  mode?: ConnectMode;
   window?: WindowLike;
   pollMs?: number;
 }): Promise<ConnectResult> {
@@ -62,6 +67,7 @@ export function connectEngram(opts: {
   let vaultOrigin: string;
   try {
     validate(opts.labels, opts.scope, opts.expiresInSec);
+    if (opts.mode !== undefined && opts.mode !== "disclosure" && opts.mode !== "offline") fail("INPUT_INVALID", "mode must be disclosure or offline");
     if (typeof opts.agentId !== "bigint" || opts.agentId < 0n || opts.agentId > UINT256_MAX) fail("INPUT_INVALID", "agentId must be in 0..2^256-1");
     vaultOrigin = originOf(opts.vaultUrl) ?? fail("INPUT_INVALID", "vaultUrl must be an http(s) URL");
   } catch (e) {
@@ -70,6 +76,7 @@ export function connectEngram(opts: {
   const w = opts.window ?? (globalThis as unknown as { window: WindowLike }).window;
   const params = new URLSearchParams({
     v: "1", agentId: opts.agentId.toString(), labels: opts.labels.join(","), scope: opts.scope, expiresInSec: String(opts.expiresInSec),
+    mode: opts.mode ?? "disclosure",
   });
   if (w.location?.origin) params.set("origin", w.location.origin);
   const popup = w.open(`${vaultOrigin}/connect?${params}`, "engram-connect", "popup,width=460,height=720");
@@ -90,7 +97,8 @@ export function connectEngram(opts: {
       if (okShape) {
         // The proof is passed through untouched: the app server verifies it (verifyAppSession), not the browser.
         const proof = d.sessionProof && typeof d.sessionProof === "object" ? (d.sessionProof as AppSessionProof) : undefined;
-        resolve({ owner: d.owner as Hex, granted: d.granted as string[], txHash: d.txHash as Hex, ...(proof ? { sessionProof: proof } : {}) });
+        const mode = d.mode === "disclosure" || d.mode === "offline" ? d.mode : undefined;
+        resolve({ owner: d.owner as Hex, granted: d.granted as string[], txHash: d.txHash as Hex, ...(proof ? { sessionProof: proof } : {}), ...(mode ? { mode } : {}) });
       } else {
         reject(new EngramError(d.code === "USER_CANCELLED" ? "USER_CANCELLED" : "RELAY_REJECTED", "the vault did not grant access", { detail: d.code as string }));
       }
@@ -130,7 +138,9 @@ export function parseConnectRequest(url: string, opts: { agentCard?: AgentCard }
   if (!origin || origin !== claimed) fail("INPUT_INVALID", "origin must be an exact http(s) origin");
   const endpoints: unknown = opts.agentCard?.endpoints;
   const originVerified = Array.isArray(endpoints) && endpoints.some((e) => !!e && typeof e === "object" && typeof (e as { endpoint?: unknown }).endpoint === "string" && originOf((e as { endpoint: string }).endpoint) === origin);
-  return { agentId: BigInt(agentIdRaw), labels, scope, expiresInSec, origin: origin!, originVerified };
+  const modeRaw = p.get("mode");
+  if (modeRaw !== null && modeRaw !== "disclosure" && modeRaw !== "offline") fail("INPUT_INVALID", "mode must be disclosure or offline");
+  return { agentId: BigInt(agentIdRaw), labels, scope, expiresInSec, origin: origin!, originVerified, mode: (modeRaw ?? "offline") as ConnectMode };
 }
 
 /** Vault side: post the result to the opener, only if the opener really is `requestOrigin`. */

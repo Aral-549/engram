@@ -15,15 +15,21 @@ import {
   deriveAccount,
   deriveNamespaceId,
   deriveNamespaceKey,
+  derivePairwise,
   encodeEntry,
+  encodeEntryV2,
   encryptEntry,
+  parseAnyEntry,
   parseEntry,
   wrapNamespaceKey,
+  type AnyEntry,
   type BindingContext,
   type Entry,
   type EntryKind,
 } from "@engram/crypto";
 import { decodeEventLog, decodeFunctionData, encodeFunctionData, hexToBytes, toHex, type Hex, type LocalAccount, type TransactionReceipt } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { selectCandidates, type Candidate, type DisclosedEntry, type DisclosureMode } from "./select.js";
 import { memoryRegistryAbi } from "./abi.js";
 import { chainReads } from "./chain.js";
 import { clientsFor, loggerOf, type EngramConfig } from "./config.js";
@@ -41,6 +47,23 @@ const MAX_EXPIRY_SEC = 365 * 86400;
 const UINT256_MAX = 2n ** 256n - 1n;
 
 export type GrantScope = "read" | "readwrite";
+
+// Disclosure mode (contracts/disclosure.md). Reserved folders hold the owner's own encrypted bookkeeping.
+export const POLICY_LABEL = "engram-policy";
+export const LOG_LABEL = "engram-log";
+export const POLICY_CACHE_MS = 3000;
+const DISCLOSE_LIMIT = { max: 60, windowMs: 10 * 60 * 1000 };
+const PROPOSE_LIMIT = { max: 20, windowMs: 24 * 60 * 60 * 1000 };
+const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const PROPOSE_KINDS = ["fact", "preference", "note"];
+
+export type PolicyView = { agentId: bigint; origin: string; labels: string[]; scope: GrantScope; exp: number; active: boolean; seq: bigint };
+export type LogView = {
+  agentId: bigint; origin: string; q: string; mode: "relevant" | "full" | "write"; refs: { label: string; seq: bigint }[];
+  n: number; round: number; t: number; seq: bigint;
+};
+export type RecalledAnyEntry = { kind: string; text: string; t: number; src?: { agent: string }; seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
+type Doc = { doc: AnyEntry; seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
 export type RecalledEntry = Entry & { seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
 export type RecallResult = { entries: RecalledEntry[]; skipped: number; complete: boolean; missingSeqs: bigint[] };
 export type GrantView = {
@@ -111,6 +134,13 @@ export class OwnerSession {
   readonly #clock: () => number;
   readonly #labels = new Map<string, string>(); // nsId -> label seen in this session
   #ended = false;
+  #policyCache: { at: number; byAgent: Map<string, PolicyView> } | undefined;
+  readonly #discloseHits = new Map<string, number[]>();
+  readonly #proposeHits = new Map<string, number[]>();
+  #relayTail: Promise<void> = Promise.resolve();
+  #logTail: Promise<void> = Promise.resolve();
+  readonly #failedLogs: Uint8Array[] = [];
+  readonly #pairwiseAddr = new Map<string, Hex>();
   #lastActivity: number;
   #lastCeremony: number;
 
@@ -181,6 +211,19 @@ export class OwnerSession {
    * tab consumed the nonce first.
    */
   private async relay(functionName: string, args: readonly unknown[]): Promise<TransactionReceipt> {
+    // One relay at a time per session: background log appends must not race user actions for the nonce.
+    const prev = this.#relayTail;
+    let release!: () => void;
+    this.#relayTail = new Promise<void>((r) => (release = r));
+    await prev;
+    try {
+      return await this.relayNow(functionName, args);
+    } finally {
+      release();
+    }
+  }
+
+  private async relayNow(functionName: string, args: readonly unknown[]): Promise<TransactionReceipt> {
     const data = encodeFunctionData({ abi: memoryRegistryAbi, functionName: functionName as never, args: args as never });
     const { publicClient } = clientsFor(this.#config);
     for (let attempt = 0; ; attempt++) {
@@ -213,8 +256,15 @@ export class OwnerSession {
   async remember(label: string, entry: { kind: EntryKind; text: string }): Promise<{ seq: bigint; txHash: Hex }> {
     return traced(this.log, "owner", "remember", { label }, async () => {
       this.touch();
-      const nsId = this.nsIdOf(label);
       const plaintext = crypto(() => encodeEntry({ v: 1, t: Date.now(), kind: entry.kind, text: entry.text }));
+      return this.appendPlain(label, plaintext);
+    });
+  }
+
+  /** Encrypts and appends one canonical entry document (v1 or v2) to a folder, creating the folder if needed. */
+  private async appendPlain(label: string, plaintext: Uint8Array): Promise<{ seq: bigint; txHash: Hex }> {
+    {
+      const nsId = this.nsIdOf(label);
       for (let attempt = 0; ; attempt++) {
         const ns = await this.reads.namespace(this.owner, nsId);
         if (!ns.exists) await this.relay("createNamespace", [nsId]).catch((e) => {
@@ -228,7 +278,30 @@ export class OwnerSession {
           if (!(e instanceof EngramError && e.detail === "WrongEpoch") || attempt >= 1) throw e; // rotated meanwhile
         }
       }
-    });
+    }
+  }
+
+  /** Every decryptable document in a folder (v1 and v2), seq-ordered. Undecodable entries are counted, not returned. */
+  private async readDocs(label: string): Promise<{ docs: Doc[]; skipped: number; missingSeqs: bigint[] }> {
+    const nsId = this.nsIdOf(label);
+    const ns = await this.reads.namespace(this.owner, nsId);
+    this.live();
+    if (!ns.exists) return { docs: [], skipped: 0, missingSeqs: [] };
+    const got = dedupe(await this.#config.source.entries({ owner: this.owner, nsId }), ns.nextSeq);
+    const missingSeqs = missing(got, ns.nextSeq);
+    const docs: Doc[] = [];
+    let skipped = 0;
+    for (const e of got) {
+      const key = this.nsKey(label, e.epoch);
+      try {
+        const pt = await decryptEntry({ key, ctx: this.ctx, nsId: hexToBytes(nsId), epoch: e.epoch, envelope: hexToBytes(e.ciphertext) });
+        docs.push({ doc: parseAnyEntry(pt), seq: e.seq, epoch: e.epoch, byOwner: e.byOwner, agentId: e.agentId, txHash: e.txHash });
+      } catch {
+        skipped++;
+      }
+    }
+    this.live();
+    return { docs, skipped, missingSeqs };
   }
 
   async recall(label: string): Promise<RecallResult> {
@@ -398,7 +471,7 @@ export class OwnerSession {
    * Signs an app session proof (identity for one app and agent), inside the session: no passkey prompt.
    * The app server checks it with `verifyAppSession`; it grants no access on its own.
    */
-  async signAppSession(opts: { agentId: bigint; origin: string; ttlSec: number }): Promise<AppSessionProof> {
+  async signAppSession(opts: { agentId: bigint; origin: string; ttlSec: number; pairwise?: boolean }): Promise<AppSessionProof> {
     return traced(this.log, "owner", "signAppSession", { agentId: opts.agentId }, async () => {
       this.touch();
       assertAgentId(opts.agentId);
@@ -409,17 +482,265 @@ export class OwnerSession {
       const issuedAt = BigInt(Math.floor(Date.now() / 1000));
       const expiresAt = issuedAt + BigInt(opts.ttlSec);
       this.live();
+      // Disclosure mode: the agent only ever sees the pairwise identity for its own agentId (disclosure.md D2).
+      const signer: LocalAccount = opts.pairwise ? this.pairwiseAccount(opts.agentId) : this.#account;
+      const owner = signer.address;
       let signature: Hex;
       try {
-        signature = await this.#account.signTypedData({
+        signature = await signer.signTypedData({
           domain: appSessionDomain(this.#config), types: APP_SESSION_TYPES, primaryType: "AppSession",
-          message: { owner: this.owner, agentId: opts.agentId, origin, issuedAt, expiresAt },
+          message: { owner, agentId: opts.agentId, origin, issuedAt, expiresAt },
         });
       } catch (e) {
         if (isMeraError(e) && e.code === "SESSION_ENDED") throw ended();
         throw e;
       }
-      return { owner: this.owner, agentId: opts.agentId.toString(), origin, issuedAt: issuedAt.toString(), expiresAt: expiresAt.toString(), signature };
+      this.live();
+      return { owner, agentId: opts.agentId.toString(), origin, issuedAt: issuedAt.toString(), expiresAt: expiresAt.toString(), signature };
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------- Disclosure mode
+
+  /** The pseudonymous address agent `agentId` sees for this owner (stable across devices, distinct per agent). */
+  pairwise(agentId: bigint): Hex {
+    this.live();
+    assertAgentId(agentId);
+    const k = agentId.toString();
+    let a = this.#pairwiseAddr.get(k);
+    if (!a) {
+      const id = crypto(() => derivePairwise(this.#prf, agentId));
+      id.key.fill(0);
+      a = id.address as Hex;
+      this.#pairwiseAddr.set(k, a);
+    }
+    return a;
+  }
+
+  private pairwiseAccount(agentId: bigint): LocalAccount {
+    this.live();
+    const id = crypto(() => derivePairwise(this.#prf, agentId));
+    const account = privateKeyToAccount(toHex(id.key));
+    id.key.fill(0);
+    return account;
+  }
+
+  /** Approves an agent for Disclosure mode: an encrypted policy entry, no onchain grant, no key leaves the vault. */
+  async approve(agentId: bigint, opts: { origin: string; labels: string[]; scope: GrantScope; expiresInSec: number }) {
+    return traced(this.log, "owner", "approve", { agentId, scope: opts.scope }, async () => {
+      this.touch();
+      assertAgentId(agentId);
+      const origin = exactOrigin(opts.origin) ?? fail("INPUT_INVALID", "origin must be an exact http(s) origin");
+      const labels = Array.isArray(opts.labels) ? [...opts.labels] : [];
+      if (!labels.length || labels.length > 8 || new Set(labels).size !== labels.length || !labels.every((l) => typeof l === "string" && LABEL_RE.test(l) && !l.startsWith("engram-"))) {
+        fail("INPUT_INVALID", "labels must be 1..8 unique, non-reserved folder labels");
+      }
+      if (opts.scope !== "read" && opts.scope !== "readwrite") fail("INPUT_INVALID", "scope must be read or readwrite");
+      if (!Number.isSafeInteger(opts.expiresInSec) || opts.expiresInSec <= 0 || opts.expiresInSec > MAX_EXPIRY_SEC) {
+        fail("INPUT_INVALID", "expiresInSec must be 1..31536000 (365 days)");
+      }
+      await this.freshCeremony(); // approving shares data: same prompt rule as grant (sdk.md "Session scoping")
+      const exp = this.#clock() + opts.expiresInSec * 1000;
+      return this.writePolicy({ agentId, origin, labels, scope: opts.scope, exp, active: true });
+    });
+  }
+
+  /** Withdraws an approval: the vault stops answering that agent. */
+  async disapprove(agentId: bigint) {
+    return traced(this.log, "owner", "disapprove", { agentId }, async () => {
+      this.touch();
+      assertAgentId(agentId);
+      const p = (await this.loadPolicies(true)).get(agentId.toString()) ?? fail("INPUT_INVALID", `agent ${agentId} has no approval`);
+      const r = await this.writePolicy({ agentId, origin: p.origin, labels: p.labels, scope: p.scope, exp: p.exp, active: false });
+      return { txHash: r.txHash };
+    });
+  }
+
+  private async writePolicy(p: Omit<PolicyView, "seq">) {
+    const bytes = crypto(() =>
+      encodeEntryV2({ v: 2, t: this.#clock(), kind: "policy", agent: p.agentId.toString(), origin: p.origin, labels: p.labels, scope: p.scope, exp: p.exp, active: p.active }),
+    );
+    const r = await this.appendPlain(POLICY_LABEL, bytes);
+    const cache = this.#policyCache ?? { at: this.#clock(), byAgent: new Map() };
+    const prev = cache.byAgent.get(p.agentId.toString());
+    if (!prev || prev.seq < r.seq) cache.byAgent.set(p.agentId.toString(), { ...p, seq: r.seq });
+    this.#policyCache = cache;
+    return { txHash: r.txHash, pairwiseOwner: this.pairwise(p.agentId) };
+  }
+
+  /** Latest policy per agent, re-read from the chain when the cache is older than 3 s (or when forced). */
+  private async loadPolicies(force = false): Promise<Map<string, PolicyView>> {
+    const now = this.#clock();
+    const c = this.#policyCache;
+    if (!force && c && now - c.at >= 0 && now - c.at <= POLICY_CACHE_MS) return c.byAgent;
+    let read = await this.readDocs(POLICY_LABEL);
+    for (let i = 0; i < 6 && read.missingSeqs.length; i++) {
+      await new Promise((r) => setTimeout(r, 500)); // the indexer can trail the chain (D29)
+      read = await this.readDocs(POLICY_LABEL);
+    }
+    const { docs } = read;
+    // Start from what this session already knows: a refresh never replaces a policy with an older one, so indexer
+    // lag can never undo a revoke made here (BUGLOG D-3, disclosure.md D30).
+    const byAgent = new Map<string, PolicyView>(c?.byAgent ?? []);
+    for (const d of docs) {
+      if (d.doc.v !== 2 || d.doc.kind !== "policy" || !d.byOwner) continue;
+      const x = d.doc;
+      const prev = byAgent.get(x.agent);
+      if (!prev || prev.seq < d.seq) byAgent.set(x.agent, { agentId: BigInt(x.agent), origin: x.origin, labels: x.labels, scope: x.scope, exp: x.exp, active: x.active, seq: d.seq });
+    }
+    this.#policyCache = { at: now, byAgent };
+    return byAgent;
+  }
+
+  async policies(): Promise<PolicyView[]> {
+    return traced(this.log, "owner", "policies", {}, async () => {
+      this.touch();
+      return [...(await this.loadPolicies(true)).values()];
+    });
+  }
+
+  /** The current approval for one agent (cached up to 3 s), used by the bridge to check the requesting origin. */
+  async approvalFor(agentId: bigint): Promise<PolicyView | undefined> {
+    this.touch();
+    assertAgentId(agentId);
+    return (await this.loadPolicies()).get(agentId.toString());
+  }
+
+  private async checkedPolicy(agentId: bigint, origin: string): Promise<PolicyView> {
+    assertAgentId(agentId);
+    const p = (await this.loadPolicies()).get(agentId.toString());
+    if (!p || !p.active || p.origin !== origin) fail("NOT_APPROVED", "this agent is not approved for this site");
+    if (p!.exp <= this.#clock()) fail("EXPIRED", "this approval has expired");
+    return p!;
+  }
+
+  private hit(map: Map<string, number[]>, key: string, limit: { max: number; windowMs: number }): boolean {
+    const now = this.#clock();
+    const list = (map.get(key) ?? []).filter((t) => now - t >= 0 && now - t < limit.windowMs);
+    if (list.length >= limit.max) {
+      map.set(key, list);
+      return false;
+    }
+    list.push(now);
+    map.set(key, list);
+    return true;
+  }
+
+  /** Answers one agent question from approved folders only, and logs the read (contracts/disclosure.md). */
+  async disclose(req: { agentId: bigint; origin: string; query: string; mode: DisclosureMode; round: number }): Promise<{ entries: DisclosedEntry[]; mode: DisclosureMode }> {
+    return traced(this.log, "owner", "disclose", { agentId: req.agentId, mode: req.mode }, async (extra) => {
+      this.touch();
+      if (typeof req.query !== "string" || [...req.query].length > 500) fail("BAD_REQUEST", "query must be a string of at most 500 characters");
+      if (req.mode !== "relevant" && req.mode !== "full") fail("BAD_REQUEST", "mode must be relevant or full");
+      if (!Number.isSafeInteger(req.round) || req.round < 0 || req.round > 3) fail("BAD_REQUEST", "round must be 0..3");
+      const policy = await this.checkedPolicy(req.agentId, req.origin);
+      if (!this.hit(this.#discloseHits, req.agentId.toString(), DISCLOSE_LIMIT)) fail("RATE_LIMITED", "too many reads by this agent; try again in a few minutes");
+      const me = req.agentId.toString();
+      const candidates: Candidate[] = [];
+      let lagBudget = 6; // the indexer can trail the chain by ~1 s: re-read briefly, once per call (D29)
+      for (const label of policy.labels) {
+        let read = await this.readDocs(label);
+        while (read.missingSeqs.length && lagBudget-- > 0) {
+          await new Promise((r) => setTimeout(r, 500));
+          read = await this.readDocs(label);
+        }
+        for (const d of read.docs) {
+          const x = d.doc;
+          if (x.v === 1) candidates.push({ kind: x.kind, text: x.text, by: "owner", t: x.t, seq: d.seq, label });
+          else if (x.kind !== "policy" && x.kind !== "log" && x.src.agent === me) candidates.push({ kind: x.kind, text: x.text, by: "self", t: x.t, seq: d.seq, label });
+          // proposals by other agents are never candidates (quarantine, disclosure.md D19)
+        }
+      }
+      const picked = selectCandidates(req.query, candidates, req.mode);
+      this.queueLog({
+        agentId: req.agentId, origin: req.origin, q: [...req.query].slice(0, 200).join(""), mode: req.mode,
+        refs: picked.map((c) => ({ label: c.label, seq: c.seq })), n: picked.length, round: req.round,
+      });
+      extra.count = picked.length;
+      return { entries: picked.map(({ kind, text, by }) => ({ kind, text, by })), mode: req.mode };
+    });
+  }
+
+  /** Writes an agent's proposal into an approved folder as the owner, tagged with its source (v2, D17). */
+  async propose(agentId: bigint, origin: string, entry: { kind: EntryKind; text: string; label?: string }): Promise<{ seq: bigint; txHash: Hex }> {
+    return traced(this.log, "owner", "propose", { agentId }, async () => {
+      this.touch();
+      const policy = await this.checkedPolicy(agentId, origin);
+      if (policy.scope !== "readwrite") fail("READ_ONLY", "this agent may read but not write");
+      const label = entry.label ?? policy.labels[0]!;
+      if (!policy.labels.includes(label)) fail("BAD_REQUEST", "that folder is not approved for this agent");
+      if (typeof entry.kind !== "string" || !PROPOSE_KINDS.includes(entry.kind)) fail("BAD_REQUEST", "kind must be fact, preference, or note");
+      const text = typeof entry.text === "string" ? entry.text.trim() : "";
+      if ([...text].length < 1 || [...text].length > 500) fail("BAD_REQUEST", "text must be 1..500 characters");
+      if (!this.hit(this.#proposeHits, agentId.toString(), PROPOSE_LIMIT)) fail("QUOTA", "this agent reached its daily limit of proposals");
+      const bytes = crypto(() => encodeEntryV2({ v: 2, t: this.#clock(), kind: entry.kind, text, src: { agent: agentId.toString() } }));
+      const r = await this.appendPlain(label, bytes);
+      this.queueLog({ agentId, origin, q: "", mode: "write", refs: [{ label, seq: r.seq }], n: 1, round: 0 });
+      return r;
+    });
+  }
+
+  /** Appends a log entry in the background; failures are kept and retried with the next one (D27). */
+  private queueLog(l: Omit<LogView, "t" | "seq">) {
+    let bytes: Uint8Array;
+    try {
+      bytes = crypto(() =>
+        encodeEntryV2({
+          v: 2, t: this.#clock(), kind: "log", agent: l.agentId.toString(), origin: l.origin, q: l.q, mode: l.mode,
+          refs: l.refs.map((r) => ({ l: r.label, s: r.seq.toString() })), n: l.n, round: l.round,
+        }),
+      );
+    } catch {
+      return; // cannot happen for validated inputs; never fail the read over its log
+    }
+    const batch = [...this.#failedLogs.splice(0), bytes];
+    this.#logTail = this.#logTail.then(async () => {
+      for (let i = 0; i < batch.length; i++) {
+        if (this.#ended) return;
+        try {
+          await this.appendPlain(LOG_LABEL, batch[i]!);
+        } catch {
+          this.#failedLogs.push(...batch.slice(i));
+          this.log({ stage: "sdk", side: "owner", op: "log", traceId: "-", ok: false, code: "LOG_PENDING", pending: this.#failedLogs.length });
+          return;
+        }
+      }
+    });
+  }
+
+  /** Resolves when queued log appends have been attempted. */
+  async flushLogs(): Promise<{ pending: number }> {
+    await this.#logTail;
+    return { pending: this.#failedLogs.length };
+  }
+
+  async disclosures(filter: { agentId?: bigint } = {}): Promise<LogView[]> {
+    return traced(this.log, "owner", "disclosures", {}, async () => {
+      this.touch();
+      const out: LogView[] = [];
+      for (const d of (await this.readDocs(LOG_LABEL)).docs) {
+        const x = d.doc;
+        if (x.v !== 2 || x.kind !== "log" || !d.byOwner) continue;
+        if (filter.agentId !== undefined && x.agent !== filter.agentId.toString()) continue;
+        out.push({ agentId: BigInt(x.agent), origin: x.origin, q: x.q, mode: x.mode, refs: x.refs.map((r) => ({ label: r.l, seq: BigInt(r.s) })), n: x.n, round: x.round, t: x.t, seq: d.seq });
+      }
+      return out.sort((a, b) => (b.seq > a.seq ? 1 : -1));
+    });
+  }
+
+  /** Like recall, but includes v2 agent proposals with their source. */
+  async recallAll(label: string): Promise<{ entries: RecalledAnyEntry[]; skipped: number; complete: boolean; missingSeqs: bigint[] }> {
+    return traced(this.log, "owner", "recallAll", { label }, async () => {
+      this.touch();
+      const { docs, skipped, missingSeqs } = await this.readDocs(label);
+      const entries: RecalledAnyEntry[] = [];
+      for (const d of docs) {
+        const x = d.doc;
+        const meta = { seq: d.seq, epoch: d.epoch, byOwner: d.byOwner, agentId: d.agentId, txHash: d.txHash };
+        if (x.v === 1) entries.push({ kind: x.kind, text: x.text, t: x.t, ...meta });
+        else if (x.kind !== "policy" && x.kind !== "log") entries.push({ kind: x.kind, text: x.text, t: x.t, src: x.src, ...meta });
+      }
+      return { entries, skipped, complete: missingSeqs.length === 0, missingSeqs };
     });
   }
 
