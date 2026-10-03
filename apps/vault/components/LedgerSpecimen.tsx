@@ -8,8 +8,8 @@ type Row = { who: string; what: string; meta: string; tone: "you" | "agent" | "r
 const ROWS: Row[] = [
   { who: "You", what: "Vegetarian, no eggs either", meta: "#41 · sealed on Monad", tone: "you" },
   { who: "Sage", what: "Allergic to peanuts", meta: "#42 · proposed by Sage", tone: "agent" },
-  { who: "Wayfarer", what: "asked \u201cdinner plans?\u201d, shared 1", meta: "relevant only · logged", tone: "read" },
-  { who: "You", what: "revoked Wayfarer", meta: "vault stops answering", tone: "revoke" },
+  { who: "Wayfarer", what: 'asked about dinner, got 1 memory', meta: "1 of 2 shared · logged", tone: "read" },
+  { who: "You", what: "revoked Wayfarer", meta: "the vault stops answering", tone: "revoke" },
 ];
 const STEP_MS = 1700;
 
@@ -61,7 +61,7 @@ export function LedgerSpecimen() {
         ))}
       </ol>
       <p className="mt-5 font-mono text-[11px] leading-relaxed text-ink-soft">
-        Ciphertext only, onchain. Agents never hold a key: they ask, your vault answers with what is relevant, and logs it.
+        Only ciphertext goes onchain. Agents don&apos;t get a key; they ask, and your vault answers with what fits and keeps a note of it.
       </p>
     </figure>
   );

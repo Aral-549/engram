@@ -42,9 +42,9 @@ function Strip() {
     if (agentId === null || agentId === undefined || window.parent === window) return;
     const push = (text: string, tone: Line["tone"]) => setLines((l) => [{ key: seq.current++, text, tone }, ...l].slice(0, 3));
     const onEvent = (e: BridgeEvent) => {
-      if (!e.ok) return push(e.code === "RATE_LIMITED" ? "Too many reads, paused" : `Refused: ${e.code.toLowerCase().replaceAll("_", " ")}`, "error");
+      if (!e.ok) return push(e.code === "RATE_LIMITED" ? "Paused: this app asked too often" : `Refused: ${e.code.toLowerCase().replaceAll("_", " ")}`, "error");
       if (e.op === "propose") return push(`Saved for you, waiting for your review: ${e.text}`, "write");
-      if (!e.entries.length) return push(e.mode === "full" ? "Asked for everything: nothing to share" : "Asked, nothing relevant shared", "empty");
+      if (!e.entries.length) return push(e.mode === "full" ? "Asked for everything, but there's nothing to share yet" : "Asked, nothing relevant shared", "empty");
       push(`${e.mode === "full" ? "Full read" : "Shared"} ${e.entries.length}: ${e.entries.map((x) => x.text).join("; ")}`, "read");
     };
     bridge.current = startBridge({ session: () => sessionRef.current ?? undefined, agentId, window: window as never, onEvent });
@@ -94,9 +94,9 @@ function Strip() {
               {lines[0].text}
             </span>
           ) : status === "ready" ? (
-            <span className="text-ink-soft">No reads yet. Every read appears here and in your vault.</span>
+            <span className="text-ink-soft">No reads yet. Each one will show up here and in your vault.</span>
           ) : (
-            <span className="text-ink-soft">{error ?? "Unlock to let this app ask your memory. It never gets a key."}</span>
+            <span className="text-ink-soft">{error ?? "Unlock so this app can ask your vault. It won't get a key."}</span>
           )}
         </p>
       </div>

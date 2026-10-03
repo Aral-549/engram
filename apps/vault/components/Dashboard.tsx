@@ -129,7 +129,7 @@ function MemoryView() {
   return (
     <div className="max-w-3xl">
       <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="What your AI knows about you"><Words>What your AI knows about you</Words></h2>
-      <p className="mt-2 text-ink-soft">Encrypted before it leaves this device. Only you, and apps you approve per folder, can read it.</p>
+      <p className="mt-2 text-ink-soft">Everything here is encrypted before it leaves this device. Apps only see what your vault decides to share with them.</p>
 
       <div className="mt-8 flex flex-wrap items-end gap-1 border-b border-rule">
         {tabs.map((label) => (
@@ -186,7 +186,7 @@ function MemoryView() {
         ))}
       </ul>
       {current && !current.complete ? (
-        <p className="mt-4 font-mono text-xs text-rust">Some entries could not be loaded from the indexer yet. They are safe onchain; refresh in a moment.</p>
+        <p className="mt-4 font-mono text-xs text-rust">A few entries haven&apos;t reached the indexer yet. They&apos;re safe onchain, so refresh in a moment.</p>
       ) : null}
     </div>
   );
@@ -262,7 +262,8 @@ function AccessView() {
     <div className="max-w-3xl">
       <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="Who can read your memory"><Words>Who can read your memory</Words></h2>
       <p className="mt-2 text-ink-soft">
-        Revoking changes the folder&apos;s key. The app keeps nothing new; what it already read cannot be un-shared, by anyone.
+        Revoke an app and your vault stops answering it. For apps with offline access, revoking also changes the folder&apos;s key.
+        Anything an app was already shown can&apos;t be taken back, by anyone.
       </p>
       <ul className="mt-8 space-y-4">
         {grants === null ? <li className="text-ink-soft">Checking access…</li> : null}
@@ -274,7 +275,7 @@ function AccessView() {
             <li key={id} className="paper-card settle lift grid grid-cols-[1fr_auto] items-center gap-4 px-5 py-4">
               <div>
                 <p className="font-medium">{card?.name ?? `Agent #${p.agentId}`}</p>
-                <p className="mt-0.5 text-sm text-ink-soft">Asks your vault while you chat. It never holds a key.</p>
+                <p className="mt-0.5 text-sm text-ink-soft">Asks your vault while you chat and never holds a key.</p>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs text-ink-soft">
                   <span>folders: {p.labels.join(", ")}</span>
                   <span className={p.scope === "readwrite" ? "text-rust" : "text-seal"}>{p.scope === "readwrite" ? "can ask and propose" : "can ask"}</span>
@@ -367,11 +368,11 @@ function ReadsView() {
   const cards = useAgentCards([...new Set((logs ?? []).map((l) => l.agentId.toString()))]);
   return (
     <div className="max-w-3xl">
-      <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="Every read, by every agent"><Words>Every read, by every agent</Words></h2>
-      <p className="mt-2 text-ink-soft">Agents in Disclosure mode never hold your memory. Each time one asks, your vault answers with only what is relevant, and writes it here.</p>
+      <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="What each app has asked"><Words>What each app has asked</Words></h2>
+      <p className="mt-2 text-ink-soft">Each time an app asks your vault something, it&apos;s listed here with what was shared. New reads show up 10 to 20 seconds after they happen.</p>
       <ol className="mt-8 space-y-3" aria-live="polite">
         {logs === null ? <li className="text-ink-soft">Opening the log…</li> : null}
-        {logs && logs.length === 0 ? <li className="text-ink-soft">No agent has asked your vault yet.</li> : null}
+        {logs && logs.length === 0 ? <li className="text-ink-soft">No app has asked your vault anything yet.</li> : null}
         {(logs ?? []).slice(0, 100).map((l, i) => {
           const name = cards[l.agentId.toString()]?.name ?? `Agent #${l.agentId}`;
           const shared = l.refs.map((r) => texts.get(`${r.label}:${r.seq}`) ?? `${r.label} #${r.seq}`);
@@ -385,7 +386,7 @@ function ReadsView() {
                 {relativeTime(l.t)}
               </p>
               <p className={`mt-1 leading-snug ${l.n === 0 ? "text-ink-soft" : ""}`}>
-                {l.n === 0 ? "Nothing relevant, nothing shared." : `${l.mode === "write" ? "Saved" : `Shared ${l.n}`}: ${shared.join("; ")}`}
+                {l.n === 0 ? "Nothing matched, so nothing was shared." : `${l.mode === "write" ? "Saved" : `Shared ${l.n}`}: ${shared.join("; ")}`}
               </p>
             </li>
           );
@@ -442,11 +443,11 @@ function ReviewView({ onCount }: { onCount: (n: number) => void }) {
     <div className="max-w-3xl">
       <h2 className="font-display text-4xl tracking-tight md:text-5xl" aria-label="Review what agents proposed"><Words>Review what agents proposed</Words></h2>
       <p className="mt-2 text-ink-soft">
-        An agent&apos;s proposals stay with that agent until you confirm them. Only what you confirm becomes your memory and reaches your
-        other agents. This is what keeps one bad agent from poisoning the rest.
+        When an app asks to remember something, it waits here. Until you confirm it, only that app can see it. Confirm what you
+        actually said and reject the rest, so one bad app can&apos;t pass made-up details to your other apps.
       </p>
       {items === null ? <p className="mt-8 text-ink-soft">Looking for proposals…</p> : null}
-      {items && items.length === 0 ? <p className="mt-8 text-ink-soft">Nothing waiting. Agents&apos; proposals appear here.</p> : null}
+      {items && items.length === 0 ? <p className="mt-8 text-ink-soft">Nothing waiting. When an app asks to remember something, it shows up here.</p> : null}
       {[...byAgent.entries()].map(([agentId, list]) => {
         const name = cards[agentId]?.name ?? `Agent #${agentId}`;
         return (
@@ -454,7 +455,7 @@ function ReviewView({ onCount }: { onCount: (n: number) => void }) {
             <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-rule pb-2">
               <p className="font-mono text-xs uppercase tracking-wider text-ink-soft">
                 <span className="text-seal">{name}</span> proposed {totals[agentId] ?? list.length}
-                {(totals[agentId] ?? 0) > list.length ? <span className="ml-2 normal-case tracking-normal">(showing the newest {list.length}; reject all covers every one)</span> : null}
+                {(totals[agentId] ?? 0) > list.length ? <span className="ml-2 normal-case tracking-normal">(showing the newest {list.length}; &quot;reject all&quot; covers the rest too)</span> : null}
               </p>
               <button className="btn btn-danger px-2.5 py-1 text-xs" disabled={busy !== null} onClick={() => void rejectAll(agentId)}>
                 {busy === `all:${agentId}` ? "Rejecting…" : `Reject all from ${name} and revoke`}
@@ -477,7 +478,7 @@ function ReviewView({ onCount }: { onCount: (n: number) => void }) {
                   )}
                   {p.flagged ? (
                     <p className="mt-2 rounded-sm bg-rust-soft px-2 py-1 text-xs text-rust">
-                      This looks like an instruction to an AI, not a fact about you. Confirm only if you really meant it.
+                      This reads like an instruction to an AI rather than something about you. Only confirm it if you meant it.
                     </p>
                   ) : null}
                   <div className="mt-3 flex flex-wrap items-center gap-2">

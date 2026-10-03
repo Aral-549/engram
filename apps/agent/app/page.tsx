@@ -153,14 +153,14 @@ export default function Page() {
   const promises =
     MODE === "disclosure"
       ? ([
-          ["Never holds", `your memory. For each message it asks your vault, which shares only what is relevant from ${P.labels.join(", ")}.`],
-          [canWrite ? "Proposes" : "Never writes", canWrite ? "what you ask it to remember. Your vault saves it, marked as Sage's, and keeps it from other agents until you confirm." : "anything. It can ask, and nothing more."],
-          ["Forgets", "the moment you revoke it. Your vault simply stops answering."],
+          ["Asks first", `each time you message it, and your vault shares only what fits from your ${P.labels.join(", ")} folder.`],
+          [canWrite ? "Suggests" : "Never writes", canWrite ? `memories when you tell it something worth keeping. They stay marked as ${P.name}'s until you confirm them in your vault.` : "to your memory. It can only ask."],
+          ["Forgets", "you as soon as you revoke it, because your vault stops answering."],
         ] as const)
       : ([
-          ["Reads", `only your ${P.labels.join(", ")} folder, and only after you approve it in your vault.`],
-          [canWrite ? "Writes" : "Never writes", canWrite ? "what you ask it to remember, sealed into your own memory with a public receipt." : "anything. It can read what you shared and nothing more."],
-          ["Forgets", "when you revoke it. One tap in your vault, and the next reply starts from zero."],
+          ["Reads", `your ${P.labels.join(", ")} folder once you approve it in your vault.`],
+          [canWrite ? "Writes" : "Never writes", canWrite ? "what you ask it to remember into your own memory, with a public receipt for each save." : "to your memory. It can read what you shared."],
+          ["Forgets", "you when you revoke it in your vault. Its next reply starts from nothing."],
         ] as const);
 
   return (
@@ -200,7 +200,7 @@ export default function Page() {
       <section className="flex min-h-dvh flex-col px-5 py-6 md:px-12 md:py-10">
         {revoked ? (
           <p className="settle mb-4 rounded-sm border border-rust/40 bg-rust-soft px-3 py-2 text-sm text-rust">
-            Access revoked by you. I can no longer read your memory, so I&apos;ll ask what I need.
+            Access revoked by you. I can&apos;t see your memory any more, so I&apos;ll ask what I need.
             <button className="ml-2 underline" onClick={() => void connect()}>Reconnect</button>
           </p>
         ) : null}
@@ -265,7 +265,7 @@ export default function Page() {
             <div className="settle flex items-center gap-3 font-mono text-xs text-ink-soft">
               <Monogram letter={P.name[0]!} size={30} />
               <span className="drops" aria-hidden><span /><span /><span /></span>
-              <span>{connected ? (MODE === "disclosure" ? "asking your vault and thinking" : "reading your memory and thinking") : "thinking"}</span>
+              <span>{connected ? "checking your vault" : "thinking"}</span>
             </div>
           ) : null}
           <div ref={end} />
@@ -291,7 +291,7 @@ export default function Page() {
           </button>
         </form>
         <p className="mt-3 text-center font-mono text-[11px] text-ink-soft">
-          Powered by KIMI. {P.name} reads only what you share from your vault, and what it reads is sent to KIMI to answer you.
+          Runs on KIMI. {P.name} only sees what your vault shares, and that goes to KIMI so it can answer you.
         </p>
       </section>
     </main>

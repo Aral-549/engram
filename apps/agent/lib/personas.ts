@@ -17,12 +17,12 @@ export const PERSONAS: Record<PersonaId, PersonaUi & { systemPrompt: string }> =
   assistant: {
     id: "assistant",
     name: "Sage",
-    tagline: "A KIMI assistant that learns you once",
-    description: "Everyday assistant powered by KIMI. Saves the preferences you tell it to your own encrypted memory.",
+    tagline: "An everyday assistant that remembers you, in your own vault",
+    description: "An everyday assistant running on KIMI. When you tell it something worth keeping, it asks your vault to save it.",
     scope: "readwrite",
     labels: ["preferences"],
     accent: "#1f5c4a",
-    greeting: "Tell me about yourself and I'll remember what matters, in your own memory, not mine.",
+    greeting: "Tell me a bit about yourself. Anything worth keeping goes into your own vault, not mine.",
     suggestions: ["I'm vegetarian and allergic to peanuts.", "I prefer trains over flights under 6 hours.", "What do you know about me?"],
     systemPrompt:
       "You are Sage, a warm, concise everyday assistant. Answer helpfully in at most 4 short sentences unless asked for more. " +
@@ -31,12 +31,12 @@ export const PERSONAS: Record<PersonaId, PersonaUi & { systemPrompt: string }> =
   planner: {
     id: "planner",
     name: "Wayfarer",
-    tagline: "A KIMI trip and meal planner that already knows you",
-    description: "Trip and meal planner powered by KIMI. Reads only the preferences you share, never writes.",
+    tagline: "A trip and meal planner that already knows your tastes",
+    description: "A trip and meal planner running on KIMI. It reads what you choose to share and never writes to your memory.",
     scope: "read",
     labels: ["preferences"],
     accent: "#8a4b1f",
-    greeting: "Ask me to plan a weekend or a week of dinners. If you connected your memory, I won't need a questionnaire.",
+    greeting: "Ask me to plan a weekend away or a week of dinners. If you've connected your memory, I can skip the questionnaire.",
     suggestions: ["Plan a weekend in Goa for me.", "Plan three dinners for this week.", "What should I pack for a hill station in December?"],
     systemPrompt:
       "You are Wayfarer, a practical trip and meal planner. Produce short, concrete plans (bullets, at most 8). " +

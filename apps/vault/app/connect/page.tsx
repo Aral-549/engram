@@ -123,7 +123,7 @@ function Consent() {
           <h1 className="mt-4 font-display text-3xl">Access granted</h1>
           <p className="mt-2 text-ink-soft">
             {req.mode === "disclosure"
-              ? `${name} can now ask your vault about ${req.labels.join(", ")}. It never gets a key, and every read appears in your vault.`
+              ? `${name} can now ask your vault about ${req.labels.join(", ")}. It won't get a key, and every read shows up in your vault.`
               : `${name} can now read ${req.labels.join(", ")}. Revoke it any time in your vault.`}
           </p>
         </div>
@@ -145,11 +145,11 @@ function Consent() {
               )}
             </Row>
             <Row k="Folders">{req.labels.map((l) => <span key={l} className="mr-2 font-mono">{l}</span>)}</Row>
-            <Row k="Permission">{req.scope === "readwrite" ? "Read, and add new memories" : "Read only"}</Row>
+            <Row k="Permission">{req.scope === "readwrite" ? (req.mode === "disclosure" ? "Read, and suggest memories for you to review" : "Read, and add new memories") : "Read only"}</Row>
             <Row k="For">{duration(req.expiresInSec)}, or until you revoke it</Row>
             <Row k="How">
               {req.mode === "disclosure" ? (
-                <span><span className="font-medium text-seal">It never gets a key.</span> It asks your vault while you chat, and only the relevant memories are shared. Every read appears in your vault.</span>
+                <span><span className="font-medium text-seal">It never gets a key.</span> When you chat with it, it asks your vault, and the vault shares only the memories that fit. You can see every read in your vault.</span>
               ) : (
                 <span className="text-rust">Offline access: it gets a key to these folders, can read them without you, and can keep copies.</span>
               )}
@@ -162,10 +162,10 @@ function Consent() {
             </p>
           ) : null}
           <p className="mt-4 text-xs leading-relaxed text-ink-soft">
-            Approved apps send what they are shown to their AI model provider to answer you.
+            Apps pass what they&apos;re shown to their AI model provider so it can answer you.
             {req.mode === "disclosure"
-              ? " Revoking stops all further reads at once; what was already shown cannot be un-shared."
-              : " Revoking stops access to anything you add later; what was already read cannot be un-shared."}
+              ? " Revoking stops any further reads right away, but what was already shown can't be taken back."
+              : " Revoking cuts off anything you add later, but what was already read can't be taken back."}
           </p>
 
           <div className="mt-6 flex flex-col gap-2">
