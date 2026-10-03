@@ -23,7 +23,7 @@ export function Dashboard() {
       const labels = (await run((s) => discoverLabels(s)))?.map((n) => n.label) ?? [];
       const p = await run((s) => s.proposals(labels));
       if (p && !stop) setPendingCount(p.length);
-      if (!stop) t = setTimeout(() => void tick(), 6000);
+      if (!stop) t = setTimeout(() => void tick(), 15_000); // every poll reads all folders: keep it gentle on RPC
     };
     void tick();
     return () => {
@@ -398,6 +398,7 @@ function ReadsView() {
 function ReviewView({ onCount }: { onCount: (n: number) => void }) {
   const { run } = useSession();
   const [items, setItems] = useState<Proposal[] | null>(null);
+  const [totals, setTotals] = useState<Record<string, number>>({});
   const [labels, setLabels] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -407,9 +408,11 @@ function ReviewView({ onCount }: { onCount: (n: number) => void }) {
     const ls = (await run((s) => discoverLabels(s)))?.map((n) => n.label) ?? [];
     setLabels(ls);
     const p = await run((s) => s.proposals(ls));
+    const c = await run((s) => s.proposalCounts(ls));
     if (p) {
       setItems(p);
-      onCount(p.length);
+      setTotals(c ?? {});
+      onCount(Object.values(c ?? {}).reduce((a, b) => a + b, 0) || p.length);
     }
   }, [run, onCount]);
   useEffect(() => {
@@ -450,7 +453,8 @@ function ReviewView({ onCount }: { onCount: (n: number) => void }) {
           <section key={agentId} className="mt-8">
             <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-rule pb-2">
               <p className="font-mono text-xs uppercase tracking-wider text-ink-soft">
-                <span className="text-seal">{name}</span> proposed {list.length}
+                <span className="text-seal">{name}</span> proposed {totals[agentId] ?? list.length}
+                {(totals[agentId] ?? 0) > list.length ? <span className="ml-2 normal-case tracking-normal">(showing the newest {list.length}; reject all covers every one)</span> : null}
               </p>
               <button className="btn btn-danger px-2.5 py-1 text-xs" disabled={busy !== null} onClick={() => void rejectAll(agentId)}>
                 {busy === `all:${agentId}` ? "Rejecting…" : `Reject all from ${name} and revoke`}

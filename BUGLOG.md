@@ -252,3 +252,24 @@ Found by a separate adversarial pass (probes in tests/adversarial/disclosure/ an
 - **Stage/module:** sdk `OwnerSession.relaySerial` (stale-nonce retry)
 - **Regression case added:** `tests/golden/sdk/sdk.concurrency.golden.test.ts` -- case 55
 - **Status:** fixed
+
+## 2026-10-03 -- PR-1..PR-7: provenance adversarial review
+Found by a separate adversarial pass (probes in tests/adversarial/disclosure/provenance.adversarial.test.ts).
+- **PR-1 (medium):** confirm was not idempotent: if the review write failed after the copy, confirming again wrote a second copy. Case P17.
+- **PR-2 (medium):** two sessions confirming at once each wrote a copy; agents saw duplicates. Case P18.
+- **PR-3 (medium/high):** `rejectAllFrom` made one relay per proposal; an agent flooding 35 proposals pushed it past the relay limit, failing reject-all. Case P20.
+- **PR-4 (medium):** "reject all and revoke" did not revoke an offline agent's key grant, so it kept writing. Case P21.
+- **PR-5 (low):** `looksLikeInstruction` role-prefix regex backtracked quadratically (ReDoS). Case P25.
+- **PR-6 (low):** confirm then reject lost the copy's `confirmedFrom`. Case P19.
+- **PR-7 (low, warning quality):** trivial evasions of the instruction heuristic (spacing, homoglyphs, soft hyphen, entities, new phrases). Case P24.
+- Gaps fixed alongside: identical re-proposals after confirm (P22), unbounded inbox (P23).
+- **Stage/module:** sdk owner review paths, sdk instruction.ts, crypto entry2
+- **Regression cases added:** `tests/golden/disclosure/provenance.review.golden.test.ts`, `tests/golden/disclosure/instruction2.golden.test.ts`, `tests/golden/crypto/crypto.v2-reviews.golden.test.ts`
+- **Status:** fixed
+
+## 2026-10-03 -- DP-2: stale-nonce collisions filled the relay's forgery bucket
+- **Symptom:** five sessions of one owner writing at once: 2 of 5 failed with RATE_LIMITED (adversarial probe `five-sessions`).
+- **Root cause:** a genuine owner signature over an already-used nonce was treated as `BAD_SIGNATURE` and counted in the "unverified" (forgery) bucket, so honest collisions exhausted it and blocked the retries.
+- **Stage/module:** sdk relay handler (`createRelayHandler`) and `OwnerSession.relaySerial`
+- **Regression case added:** `tests/golden/sdk/sdk.concurrency2.golden.test.ts` -- case 56
+- **Status:** fixed

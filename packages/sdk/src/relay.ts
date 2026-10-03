@@ -179,11 +179,39 @@ export function createRelayHandler(opts: {
     } catch {
       signer = undefined;
     }
-    if (!signer || signer.toLowerCase() !== owner.toLowerCase()) return unverified(reject(400, "BAD_SIGNATURE", "signature does not match owner and nonce"), { fn });
-    if (!within(`v:${owner.toLowerCase()}`, perOwner)) return done(reject(429, "RATE_LIMITED", "too many requests for this owner"), { owner, fn });
-
+    if (!signer || signer.toLowerCase() !== owner.toLowerCase()) {
+      // A genuine owner signature over one of the last few nonces is a collision between the owner's own sessions
+      // (a vault tab and a bridge strip), not a forgery: answer STALE_NONCE and count it apart, so honest retries are
+      // never blocked by the forgery bucket (BUGLOG DP-2, sdk.md case 56).
+      for (let k = 1n; k <= 8n && k <= nonce; k++) {
+        let past: Hex | undefined;
+        try {
+          past = await recoverTypedDataAddress({
+            domain: ownerCallDomain(config), types: OWNER_CALL_TYPES, primaryType: "OwnerCall",
+            message: { owner, dataHash: keccak256(data), nonce: nonce - k, deadline }, signature,
+          });
+        } catch {
+          past = undefined;
+        }
+        if (past && past.toLowerCase() === owner.toLowerCase()) {
+          return done(within(`s:${owner.toLowerCase()}`, perOwner) ? reject(400, "STALE_NONCE", "this request was signed for an earlier nonce; sign again") : reject(429, "RATE_LIMITED", "too many stale requests for this owner"), { owner, fn });
+        }
+      }
+      return unverified(reject(400, "BAD_SIGNATURE", "signature does not match owner and nonce"), { fn });
+    }
     // Serialize sends so the relayer wallet's nonces never collide.
     const run = queue.then(async (): Promise<RelayResponse> => {
+      // While this request waited, another of the owner's sessions may have used the nonce: that is a stale request,
+      // answered without simulating, and it never spends the owner's verified budget (BUGLOG DP-2).
+      try {
+        const now = await publicClient.readContract({ address: config.registry, abi: memoryRegistryAbi, functionName: "nonces", args: [owner] });
+        if (now !== nonce) {
+          return within(`s:${owner.toLowerCase()}`, perOwner) ? reject(400, "STALE_NONCE", "this request was signed for an earlier nonce; sign again") : reject(429, "RATE_LIMITED", "too many stale requests for this owner");
+        }
+      } catch {
+        return reject(502, "UPSTREAM_UNAVAILABLE", "the chain RPC is unavailable");
+      }
+      if (!within(`v:${owner.toLowerCase()}`, perOwner)) return reject(429, "RATE_LIMITED", "too many requests for this owner");
       try {
         const { request } = await publicClient.simulateContract({
           account: wallet.account, address: config.registry, abi: memoryRegistryAbi, functionName: "relay",

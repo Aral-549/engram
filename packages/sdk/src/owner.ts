@@ -76,6 +76,16 @@ export type RecalledAnyEntry = {
 };
 export type Proposal = { label: string; seq: bigint; kind: string; text: string; t: number; agentId: bigint; txHash: Hex; flagged: boolean };
 type ReviewView = { action: "confirm" | "reject"; agent: string; copy?: string; seq: bigint };
+/** Every review record seen, keyed `${recordSeq}|${label}:${seq}` (a batch record covers several targets). */
+type ReviewRec = ReviewView & { target: string };
+type Reviews = {
+  /** Latest verdict per proposal ("label:seq"). */
+  latest: Map<string, ReviewView>;
+  /** Confirmed copies ("label:copySeq") -> proposer and whether a later confirm of the same proposal replaced it. */
+  copies: Map<string, { agent: string; hidden: boolean }>;
+};
+const PROPOSALS_PER_AGENT = 50;
+const norm = (t: string) => t.trim().toLowerCase();
 type Doc = { doc: AnyEntry; seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
 export type RecalledEntry = Entry & { seq: bigint; epoch: bigint; byOwner: boolean; agentId: bigint; txHash: Hex };
 export type RecallResult = { entries: RecalledEntry[]; skipped: number; complete: boolean; missingSeqs: bigint[] };
@@ -162,7 +172,8 @@ export class OwnerSession {
   #policyTicket = 0;
   readonly #revokedAt = new Map<string, number>();
   // Owner reviews of agent proposals, keyed "label:seq" (provenance.md). Merged like policies: newer seq wins.
-  #reviewCache: { at: number; byTarget: Map<string, ReviewView> } | undefined;
+  #reviewCache: { at: number; records: Map<string, ReviewRec> } | undefined;
+  #reviewTail: Promise<unknown> = Promise.resolve();
   readonly #pairwiseAddr = new Map<string, Hex>();
   #lastActivity: number;
   #lastCeremony: number;
@@ -230,7 +241,7 @@ export class OwnerSession {
 
   /**
    * Signs and relays one owner call, then verifies the effect: the transaction must be a successful
-   * `relay(...)` to the registry carrying exactly this signed request (BUGLOG S2). Re-signs up to 4 times (with jitter) if another
+   * `relay(...)` to the registry carrying exactly this signed request (BUGLOG S2). Re-signs up to 7 times (growing random backoff) if another
    * tab consumed the nonce first.
    */
   private async relay(functionName: string, args: readonly unknown[], background = false): Promise<TransactionReceipt> {
@@ -284,11 +295,11 @@ export class OwnerSession {
         }
         return receipt;
       } catch (e) {
-        const stale = e instanceof EngramError && (e.detail === "BAD_SIGNATURE" || e.detail === "BadSignature");
+        const stale = e instanceof EngramError && (e.detail === "STALE_NONCE" || e.detail === "BAD_SIGNATURE" || e.detail === "BadSignature");
         // Another session of this owner (a vault tab, a bridge strip) took the nonce: re-sign with a fresh one, with
         // a random wait so the sessions stop colliding (BUGLOG DP-1).
-        if (!stale || attempt >= 4) throw e;
-        await new Promise((r) => setTimeout(r, 150 + Math.floor(Math.random() * 450)));
+        if (!stale || attempt >= 7) throw e;
+        await new Promise((r) => setTimeout(r, Math.min(2000, 150 * 2 ** attempt) + Math.floor(Math.random() * 300)));
       }
     }
   }
@@ -742,11 +753,25 @@ export class OwnerSession {
           // Only the owner's own appends count as the owner's; `src` is trusted only on those (D31, D32). Any agent's
           // writes reach that agent alone until the owner reviews them: confirmed ones live on as the owner's copy,
           // rejected ones are gone (quarantine, D19; provenance.md P3, P4, P6).
-          if (w === "owner") candidates.push({ kind: x.kind, text: x.text, by: "owner", t: x.t, seq: d.seq, label });
-          else if (w === me && !reviews.has(`${label}:${d.seq}`)) candidates.push({ kind: x.kind, text: x.text, by: "self", t: x.t, seq: d.seq, label });
+          if (w === "owner") {
+            if (!reviews.copies.get(`${label}:${d.seq}`)?.hidden) candidates.push({ kind: x.kind, text: x.text, by: "owner", t: x.t, seq: d.seq, label }); // P18
+          } else if (w === me && !reviews.latest.has(`${label}:${d.seq}`)) {
+            candidates.push({ kind: x.kind, text: x.text, by: "self", t: x.t, seq: d.seq, label });
+          }
         }
       }
-      const picked = selectCandidates(req.query, candidates, req.mode);
+      // Never the same text twice from one folder (P22, P26): a proposal identical to an owner memory adds nothing, and
+      // duplicate owner copies (e.g. two sessions confirming at once) collapse to the newest.
+      const seen = new Set<string>();
+      const unique = [...candidates]
+        .sort((a, b) => (a.by === b.by ? b.t - a.t || (b.seq > a.seq ? 1 : -1) : a.by === "owner" ? -1 : 1))
+        .filter((c) => {
+          const k = `${c.label}\u0000${norm(c.text)}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+      const picked = selectCandidates(req.query, unique, req.mode);
       this.queueLog({
         agentId: req.agentId, origin: req.origin, q: [...req.query].slice(0, 200).join(""), mode: req.mode,
         refs: picked.map((c) => ({ label: c.label, seq: c.seq })), n: picked.length, round: req.round,
@@ -869,9 +894,7 @@ export class OwnerSession {
     return traced(this.log, "owner", "recallAll", { label }, async () => {
       this.touch();
       const { docs, skipped, missingSeqs } = await this.readDocs(label);
-      const reviews = label.startsWith("engram-") ? new Map<string, ReviewView>() : await this.loadReviews();
-      const copies = new Map<string, string>();
-      for (const [k, r] of reviews) if (r.action === "confirm" && k.startsWith(`${label}:`)) copies.set(r.copy!, r.agent);
+      const reviews: Reviews = label.startsWith("engram-") ? { latest: new Map(), copies: new Map() } : await this.loadReviews();
       const entries: RecalledAnyEntry[] = [];
       for (const d of docs) {
         const w = writerOf(d);
@@ -879,11 +902,12 @@ export class OwnerSession {
         const x = d.doc as { kind: string; text: string; t: number; src?: { agent: string } };
         const meta = { seq: d.seq, epoch: d.epoch, byOwner: d.byOwner, agentId: d.agentId, txHash: d.txHash };
         if (w === "owner") {
-          const from = copies.get(d.seq.toString());
-          entries.push({ kind: x.kind, text: x.text, t: x.t, ...meta, ...(from ? { confirmedFrom: from } : {}) });
+          const copy = reviews.copies.get(`${label}:${d.seq}`);
+          if (copy?.hidden) continue; // a duplicate copy from a concurrent confirm (P18)
+          entries.push({ kind: x.kind, text: x.text, t: x.t, ...meta, ...(copy ? { confirmedFrom: copy.agent } : {}) });
           continue;
         }
-        const r = reviews.get(`${label}:${d.seq}`);
+        const r = reviews.latest.get(`${label}:${d.seq}`);
         const review = !r ? "pending" : r.action === "confirm" ? "confirmed" : "rejected";
         // `src` is trusted only on the owner's own appends; an agent-appended entry is credited to its writer (D32).
         entries.push({ kind: x.kind, text: x.text, t: x.t, ...(d.byOwner && x.src ? { src: x.src } : {}), ...meta, review });
@@ -894,49 +918,86 @@ export class OwnerSession {
 
   // ---------------------------------------------------------------------------------------- Review (provenance.md)
 
-  /** Latest owner review per proposal, re-read when older than 3 s; reviews made here are never lost to lag (P13). */
-  private async loadReviews(force = false): Promise<Map<string, ReviewView>> {
+  /** Owner reviews of proposals, re-read when older than 3 s; reviews made here are never lost to lag (P13). */
+  private async loadReviews(force = false): Promise<Reviews> {
     const now = this.#clock();
     const c = this.#reviewCache;
-    if (!force && c && now - c.at >= 0 && now - c.at <= POLICY_CACHE_MS) return c.byTarget;
-    let read = await this.readDocs(REVIEW_LABEL);
-    for (let i = 0; i < 6 && read.missingSeqs.length; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      read = await this.readDocs(REVIEW_LABEL);
+    if (force || !c || now - c.at < 0 || now - c.at > POLICY_CACHE_MS) {
+      let read = await this.readDocs(REVIEW_LABEL);
+      for (let i = 0; i < 6 && read.missingSeqs.length; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        read = await this.readDocs(REVIEW_LABEL);
+      }
+      const records = new Map<string, ReviewRec>(c?.records ?? []);
+      for (const d of read.docs) {
+        if (d.doc.v !== 2 || !d.byOwner) continue; // only the owner's own records (P11)
+        const x = d.doc;
+        if (x.kind === "review") {
+          const target = `${x.target.l}:${x.target.s}`;
+          records.set(`${d.seq}|${target}`, { target, action: x.action, agent: x.agent, ...(x.action === "confirm" ? { copy: x.copy } : {}), seq: d.seq });
+        } else if (x.kind === "reviews") {
+          for (const tg of x.targets) {
+            const target = `${tg.l}:${tg.s}`;
+            records.set(`${d.seq}|${target}`, { target, action: "reject", agent: x.agent, seq: d.seq });
+          }
+        }
+      }
+      this.#reviewCache = { at: now, records };
     }
-    const byTarget = new Map<string, ReviewView>(c?.byTarget ?? []);
-    for (const d of read.docs) {
-      if (d.doc.v !== 2 || d.doc.kind !== "review" || !d.byOwner) continue; // only the owner's own records (P11)
-      const x = d.doc;
-      const k = `${x.target.l}:${x.target.s}`;
-      const prev = byTarget.get(k);
-      if (!prev || prev.seq < d.seq) byTarget.set(k, { action: x.action, agent: x.agent, ...(x.action === "confirm" ? { copy: x.copy } : {}), seq: d.seq });
-    }
-    this.#reviewCache = { at: now, byTarget };
-    return byTarget;
+    return deriveReviews(this.#reviewCache!.records);
   }
 
-  /** Pending agent proposals in these folders, newest first, each flagged if it looks like an instruction (P1, P9). */
+  private rememberReview(rec: ReviewRec) {
+    const c = this.#reviewCache ?? { at: this.#clock(), records: new Map<string, ReviewRec>() };
+    c.records.set(`${rec.seq}|${rec.target}`, rec);
+    this.#reviewCache = c;
+  }
+
+  /** All pending proposals (no cap), excluding duplicates of the owner's own memories in the same folder (P22). */
+  private async pendingProposals(labels: string[]): Promise<Proposal[]> {
+    const reviews = await this.loadReviews();
+    const out: Proposal[] = [];
+    for (const label of [...new Set(labels)].filter((l) => typeof l === "string" && LABEL_RE.test(l) && !l.startsWith("engram-"))) {
+      let read = await this.readDocs(label);
+      for (let i = 0; i < 6 && read.missingSeqs.length; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        read = await this.readDocs(label);
+      }
+      const ownTexts = new Set<string>();
+      for (const d of read.docs) {
+        if (writerOf(d) === "owner" && !reviews.copies.get(`${label}:${d.seq}`)?.hidden) ownTexts.add(norm((d.doc as { text: string }).text));
+      }
+      for (const d of read.docs) {
+        const w = writerOf(d);
+        if (!w || w === "owner" || reviews.latest.has(`${label}:${d.seq}`)) continue;
+        const x = d.doc as { kind: string; text: string; t: number };
+        if (ownTexts.has(norm(x.text))) continue; // already the owner's memory
+        out.push({ label, seq: d.seq, kind: x.kind, text: x.text, t: x.t, agentId: BigInt(w), txHash: d.txHash, flagged: looksLikeInstruction(x.text) });
+      }
+    }
+    return out.sort((a, b) => b.t - a.t || (b.seq > a.seq ? 1 : -1));
+  }
+
+  /** Number of pending proposals per agent (the inbox lists at most 50 per agent, P23). */
+  async proposalCounts(labels: string[]): Promise<Record<string, number>> {
+    this.touch();
+    const counts: Record<string, number> = {};
+    for (const p of await this.pendingProposals(labels)) counts[p.agentId.toString()] = (counts[p.agentId.toString()] ?? 0) + 1;
+    return counts;
+  }
+
+  /** Pending agent proposals, newest first, at most 50 per agent, each flagged if it looks like an instruction. */
   async proposals(labels: string[]): Promise<Proposal[]> {
     return traced(this.log, "owner", "proposals", {}, async (extra) => {
       this.touch();
-      const reviews = await this.loadReviews();
-      const out: Proposal[] = [];
-      for (const label of [...new Set(labels)].filter((l) => typeof l === "string" && LABEL_RE.test(l) && !l.startsWith("engram-"))) {
-        let read = await this.readDocs(label);
-        for (let i = 0; i < 6 && read.missingSeqs.length; i++) {
-          await new Promise((r) => setTimeout(r, 500));
-          read = await this.readDocs(label);
-        }
-        for (const d of read.docs) {
-          const w = writerOf(d);
-          if (!w || w === "owner" || reviews.has(`${label}:${d.seq}`)) continue;
-          const x = d.doc as { kind: string; text: string; t: number };
-          out.push({ label, seq: d.seq, kind: x.kind, text: x.text, t: x.t, agentId: BigInt(w), txHash: d.txHash, flagged: looksLikeInstruction(x.text) });
-        }
-      }
+      const per = new Map<string, number>();
+      const out = (await this.pendingProposals(labels)).filter((p) => {
+        const n = (per.get(p.agentId.toString()) ?? 0) + 1;
+        per.set(p.agentId.toString(), n);
+        return n <= PROPOSALS_PER_AGENT;
+      });
       extra.count = out.length;
-      return out.sort((a, b) => b.t - a.t || (b.seq > a.seq ? 1 : -1));
+      return out;
     });
   }
 
@@ -944,6 +1005,15 @@ export class OwnerSession {
   async review(req: { label: string; seq: bigint; action: "confirm" | "reject"; text?: string }): Promise<{ txHash: Hex; copySeq?: bigint }> {
     return traced(this.log, "owner", "review", { label: req.label, action: req.action }, async () => {
       this.touch();
+      // One review at a time per session, so a double click cannot write two copies (PR-1).
+      const run = this.#reviewTail.then(() => this.reviewNow(req), () => this.reviewNow(req));
+      this.#reviewTail = run.catch(() => undefined);
+      return run;
+    });
+  }
+
+  private async reviewNow(req: { label: string; seq: bigint; action: "confirm" | "reject"; text?: string }): Promise<{ txHash: Hex; copySeq?: bigint }> {
+    {
       if (typeof req.label !== "string" || !LABEL_RE.test(req.label) || req.label.startsWith("engram-")) fail("INPUT_INVALID", "review a proposal in one of your folders");
       if (req.action !== "confirm" && req.action !== "reject") fail("INPUT_INVALID", "action must be confirm or reject");
       if (typeof req.seq !== "bigint" || req.seq < 0n) fail("INPUT_INVALID", "seq must be a non-negative bigint");
@@ -961,9 +1031,14 @@ export class OwnerSession {
       const x = d!.doc as { kind: EntryKind; text: string };
       let copySeq: bigint | undefined;
       if (req.action === "confirm") {
-        // The owner's own copy (v1, so offline agents can read it too). From now on it is simply the owner's memory.
-        const copy = await this.appendPlain(req.label, crypto(() => encodeEntry({ v: 1, t: Date.now(), kind: x.kind, text: edited ?? x.text })));
-        copySeq = copy.seq;
+        const text = edited ?? x.text;
+        // Idempotent (PR-1): reuse an owner entry with this text and kind, written after the proposal and not yet
+        // claimed by any review (e.g. the copy of an earlier attempt whose review record failed).
+        const reviews = await this.loadReviews(true);
+        const reuse = read.docs.find((o) => o.seq > req.seq && writerOf(o) === "owner" && (o.doc as { text: string }).text === text &&
+          (o.doc as { kind: string }).kind === x.kind && !reviews.copies.has(`${req.label}:${o.seq}`));
+        // Otherwise the owner's own copy (v1, so offline agents can read it too); from now on simply the owner's memory.
+        copySeq = reuse ? reuse.seq : (await this.appendPlain(req.label, crypto(() => encodeEntry({ v: 1, t: Date.now(), kind: x.kind, text })))).seq;
       }
       const target = { l: req.label, s: req.seq.toString() };
       const bytes = crypto(() =>
@@ -974,17 +1049,13 @@ export class OwnerSession {
         ),
       );
       const r = await this.appendPlain(REVIEW_LABEL, bytes);
-      const cache = this.#reviewCache ?? { at: this.#clock(), byTarget: new Map<string, ReviewView>() };
-      const k = `${req.label}:${req.seq}`;
-      const prev = cache.byTarget.get(k);
-      if (!prev || prev.seq < r.seq) cache.byTarget.set(k, { action: req.action, agent: w!, ...(copySeq !== undefined ? { copy: copySeq.toString() } : {}), seq: r.seq });
-      this.#reviewCache = cache;
+      this.rememberReview({ target: `${req.label}:${req.seq}`, action: req.action, agent: w!, ...(copySeq !== undefined ? { copy: copySeq.toString() } : {}), seq: r.seq });
       return { txHash: r.txHash, ...(copySeq !== undefined ? { copySeq } : {}) };
-    });
+    }
   }
 
-  /** Rejects every pending proposal from one agent, then withdraws its approval (P10). */
-  async rejectAllFrom(agentId: bigint, labels: string[]): Promise<{ rejected: number; revoke?: { txHash?: Hex; pending?: true } }> {
+  /** Rejects every pending proposal from one agent in batches, withdraws its approval, and revokes its key grants. */
+  async rejectAllFrom(agentId: bigint, labels: string[]): Promise<{ rejected: number; revoke?: { txHash?: Hex; pending?: true }; revokedGrants: number }> {
     return traced(this.log, "owner", "rejectAllFrom", { agentId }, async (extra) => {
       this.touch();
       assertAgentId(agentId);
@@ -993,15 +1064,34 @@ export class OwnerSession {
         if (e instanceof EngramError && e.code === "INPUT_INVALID") return undefined; // no approval: nothing to revoke
         throw e;
       });
+      const mine = (await this.pendingProposals(labels)).filter((p) => p.agentId === agentId);
+      // Batched records (P20): a flood of proposals costs a few relays, never one each (PR-3).
       let rejected = 0;
-      for (const p of await this.proposals(labels)) {
-        if (p.agentId !== agentId) continue;
-        await this.review({ label: p.label, seq: p.seq, action: "reject" });
-        rejected++;
+      while (rejected < mine.length) {
+        let take = 0;
+        let bytes: Uint8Array | undefined;
+        for (let k = 1; k <= Math.min(50, mine.length - rejected); k++) {
+          const targets = mine.slice(rejected, rejected + k).map((p) => ({ l: p.label, s: p.seq.toString() }));
+          const b = crypto(() => encodeEntryV2({ v: 2, t: this.#clock(), kind: "reviews", agent: agentId.toString(), action: "reject", targets }));
+          if (b.length > 2048) break;
+          take = k;
+          bytes = b;
+        }
+        const r = await this.appendPlain(REVIEW_LABEL, bytes!);
+        for (const p of mine.slice(rejected, rejected + take)) this.rememberReview({ target: `${p.label}:${p.seq}`, action: "reject", agent: agentId.toString(), seq: r.seq });
+        rejected += take;
       }
       const revoke = await revoking;
+      // An offline agent holds a key, not an approval: revoke its grants on these folders too (P21, PR-4).
+      let revokedGrants = 0;
+      for (const label of labels) this.nsIdOf(label);
+      for (const g of await this.grants()) {
+        if (g.agentId !== agentId || !g.active || !g.label || !labels.includes(g.label)) continue;
+        await this.revoke(g.label, [agentId]);
+        revokedGrants++;
+      }
       extra.count = rejected;
-      return { rejected, ...(revoke ? { revoke } : {}) };
+      return { rejected, ...(revoke ? { revoke } : {}), revokedGrants };
     });
   }
 
@@ -1036,6 +1126,30 @@ export class OwnerSession {
 }
 
 // ------------------------------------------------------------------------------------------ helpers
+
+/** Latest verdict per proposal, and which confirmed copies are live or duplicates (provenance.md P8, P18, P19). */
+function deriveReviews(records: Map<string, ReviewRec>): Reviews {
+  const latest = new Map<string, ReviewView>();
+  const lastConfirm = new Map<string, ReviewRec>();
+  for (const r of records.values()) {
+    const prev = latest.get(r.target);
+    if (!prev || prev.seq < r.seq) latest.set(r.target, r);
+    if (r.action === "confirm") {
+      const pc = lastConfirm.get(r.target);
+      if (!pc || pc.seq < r.seq) lastConfirm.set(r.target, r);
+    }
+  }
+  const copies = new Map<string, { agent: string; hidden: boolean }>();
+  for (const r of records.values()) {
+    if (r.action !== "confirm" || !r.copy) continue;
+    const label = r.target.slice(0, r.target.lastIndexOf(":"));
+    const key = `${label}:${r.copy}`;
+    const live = lastConfirm.get(r.target)!.copy === r.copy;
+    // A copy named by the latest confirm of its proposal stays live, even if a reject came later (P19).
+    if (live || !copies.has(key)) copies.set(key, { agent: r.agent, hidden: !live });
+  }
+  return { latest, copies };
+}
 
 /**
  * Who wrote a memory document: "owner" for the owner's own memories, an agent id for proposals (owner-appended v2

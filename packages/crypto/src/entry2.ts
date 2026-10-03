@@ -18,7 +18,9 @@ export type LogsEntry = { v: 2; t: number; kind: "logs"; items: LogItem[] };
 export type ReviewEntry =
   | { v: 2; t: number; kind: "review"; target: { l: string; s: string }; agent: string; action: "confirm"; copy: string }
   | { v: 2; t: number; kind: "review"; target: { l: string; s: string }; agent: string; action: "reject" };
-export type EntryV2 = MemoryEntryV2 | PolicyEntry | LogEntry | LogsEntry | ReviewEntry;
+/** Batched rejections (provenance.md P20): one record for up to 50 proposals of one agent. */
+export type ReviewsEntry = { v: 2; t: number; kind: "reviews"; agent: string; action: "reject"; targets: { l: string; s: string }[] };
+export type EntryV2 = MemoryEntryV2 | PolicyEntry | LogEntry | LogsEntry | ReviewEntry | ReviewsEntry;
 export type AnyEntry = Entry | EntryV2;
 
 const MAX_BYTES = 2048;
@@ -77,6 +79,20 @@ function canonicalV2(d: unknown): EntryV2 | string {
     if (!nonNegInt(s.exp)) return "exp must be a non-negative integer (unix ms)";
     if (typeof s.active !== "boolean") return "active must be a boolean";
     return { v: 2, t: s.t as number, kind: "policy", agent: s.agent as string, origin: s.origin as string, labels: labels as string[], scope: s.scope, exp: s.exp as number, active: s.active };
+  }
+  if (s.kind === "reviews") {
+    if (!sameKeys(s, ["v", "t", "kind", "agent", "action", "targets"])) return "reviews has wrong keys";
+    if (!decimal(s.agent)) return "agent must be a decimal uint256";
+    if (s.action !== "reject") return "a reviews batch can only reject";
+    const ts = Array.isArray(s.targets) ? [...s.targets] : null;
+    if (!ts || ts.length < 1 || ts.length > 50) return "targets must be 1..50";
+    const out: { l: string; s: string }[] = [];
+    for (const t of ts) {
+      const x = isObj(t) ? { ...t } : null;
+      if (!x || !sameKeys(x, ["l", "s"]) || !label(x.l) || !decimal(x.s)) return "each target must be {l: label, s: decimal seq}";
+      out.push({ l: x.l as string, s: x.s as string });
+    }
+    return { v: 2, t: s.t as number, kind: "reviews", agent: s.agent as string, action: "reject", targets: out };
   }
   if (s.kind === "review") {
     const confirm = s.action === "confirm";

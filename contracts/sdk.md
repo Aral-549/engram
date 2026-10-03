@@ -213,8 +213,10 @@ App client
 
 ## Edge cases that must be covered
 - Two vault tabs (or a vault tab plus a Disclosure bridge, which is the normal case): both sessions valid; a relay that fails
-  on a stale nonce is re-signed with a fresh nonce up to 5 times, with a random 150-600 ms wait between tries (BUGLOG DP-1).
+  on a stale nonce is re-signed with a fresh nonce up to 7 times, with a growing random backoff (150 ms doubling, capped at 2 s, plus up
+  to 300 ms of jitter) (BUGLOG DP-1).
 | 55 | three sessions of one owner each append 4 entries at the same time | all 12 succeed, seqs distinct | DP-1 |
+| 56 | five sessions of one owner each append 3 entries at the same time | all 15 succeed, no text twice | DP-2: the relay answers a genuine owner signature over one of the last 8 nonces with 400 `STALE_NONCE`, counted in its own per-owner bucket (not the forgery bucket); the SDK re-signs on `STALE_NONCE` too |
 - Label with uppercase from an app -> `INPUT_INVALID` (crypto.md label rule), no silent lowercasing.
 - `expiresInSec` <= 0 or > 365 days -> `INPUT_INVALID` before any prompt.
 - Popup blocked -> `POPUP_BLOCKED` with instruction to call from a user gesture.
