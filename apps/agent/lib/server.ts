@@ -21,8 +21,9 @@ export function agentServer(): AgentServer {
   const p = persona(process.env.AGENT_PERSONA);
   const config: EngramConfig = {
     chainId: d.chainId, registry: d.registry, identityRegistry: d.identityRegistry, rpcUrl: d.rpcUrl,
+    // INDEXER_URL is optional: without it, reads fall back to RPC logs (slow but indexer-free), as in the vault.
     source: firstAvailable([
-      graphqlSource(need("INDEXER_URL")),
+      ...(process.env.INDEXER_URL ? [graphqlSource(process.env.INDEXER_URL)] : []),
       logsSource({ rpcUrl: d.rpcUrl, registry: d.registry, fromBlock: d.deployBlock, chainId: d.chainId, blockRange: 100n }),
     ]),
     relayer: httpRelayer("http://127.0.0.1:0/unused"), // agents write directly as their operator, never via the owner relay
