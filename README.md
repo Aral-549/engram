@@ -1,68 +1,92 @@
 # Engram
 
-**Your AI memory, owned by you. Agents never hold your keys: they ask, and your personal vault answers with only what is relevant, auditing every read in real time. Passkey-secured, encrypted end-to-end, and powered by Monad.**
-
----
-
-### The Problem
-
-Every AI app today lives in an isolated silo. You find yourself constantly re-explaining your diet to the meal planner, your tech stack to the coding assistant, and your writing style to the editor. None of them communicate, and you have zero visibility into what any company actually stores about you.
-
-When existing platforms try to build "shared memory", they almost always take a dangerous shortcut:
-- They store your raw personal notes unencrypted on centralized servers, or
-- They hand a full decryption key to every approved agent.
-
-Once an agent has your key, it can read, copy, and cache your entire life story—and you'll never know what it inspected. If one third-party agent suffers a breach, your entire memory history leaks with it.
-
----
-
-### The Engram Solution: Zero Key Sharing
-
-Engram flips this model on its head. **Agents never receive your decryption keys.**
-
-Instead, each agent communicates through a secure, lightweight vault bridge running locally on your device:
-
-- 🎯 **Agents ask, your vault decides:** While you chat, the agent's page carries a small strip of your vault. For each prompt, your local vault inspects the query, selects *only* the specific memories relevant to that task from folders you approved, and hands over just those snippets. Asking Wayfarer *"Can you suggest a dinner spot?"* shares *"allergic to peanuts"*, never your financial notes or medical records.
-- 🔍 **Every read is audited live:** The bridge strip shows reads as they happen. Your vault maintains a tamper-proof, encrypted audit log of every question asked and what memories were disclosed. An agent cannot covertly sweep your profile.
-- ⚡ **Instant, one-tap revocation:** Revoking an agent takes a single click in the bridge strip. The vault immediately stops answering on the next message—no complex key rotation required for active sessions.
-- 🛡️ **Anti-tracking across apps:** Each agent receives a distinct pseudonymous identity derived from your passkey. Two independent agents cannot cross-reference their logs to determine they are talking to the same user.
-- 🧪 **Attributed, quarantined writes:** When an assistant like Sage learns something new (e.g., *"I'm vegetarian"*), it proposes the memory. Your vault encrypts and writes it to the chain, attributed to Sage. Other agents don't see unreviewed proposals, preventing malicious agents from poisoning your shared context.
-- 🔑 **Passkey-native & completely gasless:** Everything is secured with WebAuthn PRF (Face ID, Touch ID, Windows Hello) via Mera. No seed phrases, no browser extensions. Monad stores only ciphertext, and sponsored relayers cover gas fees via EIP-712 meta-transactions.
-- 🌙 **Optional scoped offline access:** For agents that genuinely need to perform background work while you are offline, you can grant scoped, time-expiring X25519 key wraps with explicit consent.
+Personal AI memory that you actually own. AI agents never hold your decryption keys. Instead, they ask questions and your local vault answers with only what is relevant, auditing every read in real time. Everything is encrypted with your passkey, anchored on Monad, and revocable in one tap.
 
 ---
 
 ## Live Deployments
 
-Engram is fully deployed and running live on **Monad Testnet** (Chain ID `10143`):
+You can test the full system live on Monad Testnet right now.
 
-| Service | Live Link | Description |
-|---|---|---|
-| 🔐 **Engram Vault** | [hippo-plum.vercel.app](https://hippo-plum.vercel.app) | Your personal memory manager: create your vault, view encrypted records, inspect live reads, and manage agent permissions. |
-| 🤖 **Sage** (Everyday Assistant) | [hippo-foio.vercel.app](https://hippo-foio.vercel.app) | Personal assistant that can recall your context and propose new memories. Registered as **ERC-8004 Agent #1965**. |
-| 🧭 **Wayfarer** (Trip & Meal Planner) | [hippo-ntj5.vercel.app](https://hippo-ntj5.vercel.app) | Specialized travel agent with read-only access. Only receives context-relevant notes on demand. Registered as **ERC-8004 Agent #1966**. |
-| ⚡ **Envio Hosted Indexer** | [HyperIndex GraphQL Playground](https://indexer.dev.hyperindex.xyz/e2892b1/v1/graphql) | Cloud-hosted indexer syncing Monad testnet blocks in real time with sub-second query performance. |
-| 📜 **MemoryRegistry Contract** | [`0x733d1Bf4...59d31`](https://testnet.monadvision.com/address/0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31) | Monad testnet registry contract (block 67062103, verified on MonadVision). |
-| 🪪 **IdentityRegistry** | `0x8004A818BFB912233c491871b3d84c89A494BD9e` | Canonical ERC-8004 agent identity registry on Monad testnet. |
+* **Engram Vault** ([hippo-plum.vercel.app](https://hippo-plum.vercel.app))
+  Your personal memory manager. Create your vault using Face ID or Touch ID, view encrypted records, inspect live read logs, and manage connected agents.
+
+* **Sage Everyday Assistant** ([hippo-foio.vercel.app](https://hippo-foio.vercel.app))
+  A general assistant that remembers your preferences, recalls context, and proposes new memories. Registered as ERC-8004 Agent 1965.
+
+* **Wayfarer Trip and Meal Planner** ([hippo-ntj5.vercel.app](https://hippo-ntj5.vercel.app))
+  A specialized travel assistant with read only access. It receives only context relevant notes on demand. Registered as ERC-8004 Agent 1966.
+
+* **Envio Hosted Indexer** ([HyperIndex GraphQL Playground](https://indexer.dev.hyperindex.xyz/e2892b1/v1/graphql))
+  A cloud hosted indexer syncing Monad testnet blocks in real time with sub second query speeds.
+
+* **MemoryRegistry Contract** ([0x733d1Bf4...59d31](https://testnet.monadvision.com/address/0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31))
+  The core registry contract deployed on Monad testnet at block 67062103, verified on MonadVision.
+
+* **IdentityRegistry Contract**
+  The canonical ERC-8004 agent registry at `0x8004A818BFB912233c491871b3d84c89A494BD9e` on Monad testnet.
+
+---
+
+## PS 32
+
+> The evolution of the internet is creating new possibilities around ownership, identity, trust, value, and how people interact with digital systems. Identify a real world problem, emerging challenge, or unexplored opportunity within the Web3 ecosystem and develop an innovative technology driven solution. Participants are encouraged to challenge existing assumptions, rethink how digital ownership and trust work, and explore ideas that can create meaningful value for users, businesses, or communities. The problem, approach, technology, and solution are entirely open ended. Think beyond existing Web3 applications. Innovation is the priority. Reimagine what is possible.
+
+### Rethinking Digital Ownership and Trust for AI
+
+As AI agents become our daily assistants, researchers, and copilots, our relationship with digital identity and personal data changes completely. Right now, every AI service operates as an isolated walled garden. You spend your day re-explaining your dietary needs to the food planner, your preferred coding patterns to the IDE, and your personal tone to the writing assistant. They do not talk to each other, and you have zero visibility into what they store.
+
+When existing platforms try to solve this with shared memory, they usually take a dangerous shortcut. They either dump your private notes onto centralized servers in plain text, or hand full decryption keys to every third party bot. Once an agent gets your key, it can copy your entire history, and you have no way to know what it looked at. If one agent gets compromised, your entire digital life leaks with it.
+
+Engram challenges the fundamental assumption that an agent needs to possess your data to be useful. By combining passkey hardware security with Monad high speed execution and selective disclosure, Engram makes personal data sovereign, transparent, and private by default.
+
+---
+
+## How Engram Works and Why Selective Disclosure Matters
+
+Engram flips the traditional model on its head. Agents never receive your decryption keys.
+
+Instead, each agent communicates through a secure, lightweight vault bridge running locally on your device.
+
+* **Agents ask, your vault decides**
+  When you chat with an agent, its page embeds a small bridge from your vault. For every prompt you send, your local vault examines the query on your device, selects only the specific facts relevant to that task, and shares just those snippets. When you ask Wayfarer for dinner recommendations, it only gets your peanut allergy, not your financial notes or medical records.
+
+* **Every read is visible in real time**
+  The bridge strip displays reads as they happen. Your vault maintains an encrypted audit log of every question asked and what memories were disclosed. An agent cannot quietly scan your profile in the background.
+
+* **Instant one tap revocation**
+  Revoking an agent takes a single click in the bridge. Your vault immediately stops answering on the next message, with no awkward key rotations or cleanups required.
+
+* **Anti tracking across applications**
+  Every agent sees a unique pseudonymous identity derived from your passkey. Two independent agents cannot cross reference their databases to figure out they are talking to the same person.
+
+* **Attributed and quarantined writes**
+  When an assistant like Sage learns something new, such as a vegetarian diet, it proposes the memory. Your vault encrypts and writes it to the chain, attributed to Sage. Other agents cannot see unreviewed proposals, preventing malicious agents from poisoning your shared context.
+
+* **Passkey native and gasless**
+  Authentication uses WebAuthn PRF through Touch ID, Face ID, or Windows Hello via Mera. You never need seed phrases or browser extensions. Monad stores only ciphertext, and sponsored relayers cover gas costs using EIP-712 signatures.
+
+* **Scoped offline access when you want it**
+  If you have an autonomous agent that needs to run while you are offline, you can grant it a scoped, time limited X25519 key wrap with your explicit consent.
 
 ---
 
 ## Try It in 2 Minutes
 
-Experience seamless, user-controlled memory across two independent agents:
+Experience seamless, user controlled memory across two independent agents.
 
-1. **Open Sage** at [hippo-foio.vercel.app](https://hippo-foio.vercel.app) and click **Connect your memory**.
-2. **Create your vault** using your device passkey (Touch ID, Face ID, or Windows Hello). You are onchain in seconds—no wallet setup or faucet tokens needed.
-3. **Unlock the vault strip** that docks inside Sage.
-4. **Teach Sage:** Type *"I'm vegetarian and allergic to peanuts."* The vault encrypts the memories and records them on Monad testnet. The live bridge strip shows each save in real time.
-5. **Inspect transparency:** Ask *"What do you know about me?"* Sage requests an explicit full read, and the exact query appears in your vault's **Reads** log tab.
-6. **Open Wayfarer** at [hippo-ntj5.vercel.app](https://hippo-ntj5.vercel.app) and connect your vault with read-only permissions.
-7. **Notice selective disclosure:** Ask Wayfarer *"Plan dinner for tonight."* Wayfarer receives only the dietary restrictions—never your broader profile or other unrelated notes.
-8. **Revoke access:** Click **Revoke** in the bridge strip. On the very next message, Wayfarer has zero access to your memories.
+1. Open Sage at [hippo-foio.vercel.app](https://hippo-foio.vercel.app) and click Connect your memory.
+2. Create your vault using your device passkey with Touch ID, Face ID, or Windows Hello. You are onchain in seconds with no wallet setup or faucet tokens needed.
+3. Unlock the vault strip docked inside Sage.
+4. Teach Sage by saying "I am vegetarian and allergic to peanuts." The vault encrypts the memories and records them on Monad testnet. The live bridge strip shows each save in real time.
+5. Inspect transparency by asking "What do you know about me?" Sage requests an explicit full read, and the exact query appears in your vault Reads log tab.
+6. Open Wayfarer at [hippo-ntj5.vercel.app](https://hippo-ntj5.vercel.app) and connect your vault with read only permissions.
+7. Test selective disclosure by asking Wayfarer "Plan dinner for tonight." Wayfarer receives only the dietary restrictions, never your broader profile or other unrelated notes.
+8. Click Revoke in the bridge strip. On the very next message, Wayfarer has zero access to your memories.
 
 ---
 
-## Architecture & How It Works
+## Architecture and Data Flow
 
 ```
  agent app page (Wayfarer)                              your vault (isolated origin)
@@ -84,33 +108,37 @@ Experience seamless, user-controlled memory across two independent agents:
 
 ### Core Components
 
-- **Cryptographic Engine (`@engram/crypto`):**
-  - Passkey PRF generates high-entropy master seeds directly from WebAuthn hardware authenticators.
-  - HKDF-SHA256 derives account keys, epoch-scoped folder keys, and pairwise agent identifiers.
-  - AES-256-GCM encryption with Additional Authenticated Data (AAD) binds every ciphertext to chain ID, registry address, owner address, folder name, and key epoch.
-- **Onchain Registry (`MemoryRegistry.sol`):**
-  - Namespaced, append-only memory entries on Monad.
-  - Gasless EIP-712 relay support for zero-friction user onboarding.
-  - Native ERC-8004 integration, X25519 key wraps for offline delegation, and automatic epoch rotation on revoke.
-- **Envio HyperIndex (`indexer/`):**
-  - Cloud-hosted HyperIndex using HyperSync for historical blocks and RPC for real-time transactions.
-  - Enables sub-second memory reads without hammering RPC providers.
-- **Developer SDK (`@engram/sdk`):**
-  - Vault tools: `EngramOwner`, `approve`, `disclose`, `propose`, `disclosures`, and `startBridge`.
-  - Client application tools: `connectEngram`, `openVaultBridge`, and `verifyAppSession`.
-- **Agent Framework (`@engram/agent-kit`):**
-  - Robust agent backend supporting OpenAI/KIMI tool loops, HMAC-sealed continuation tokens, rate limiting, and the selective disclosure bridge.
+* **Cryptographic Engine (`@engram/crypto`)**
+  Generates high entropy master seeds directly from WebAuthn hardware authenticators. HKDF-SHA256 derives account keys, epoch scoped folder keys, and pairwise agent identifiers. AES-256-GCM authenticated encryption binds every ciphertext to chain ID, registry address, owner address, folder name, and key epoch.
+
+* **Onchain Registry (`MemoryRegistry.sol`)**
+  Stores namespaced, append only memory entries on Monad. Includes gasless EIP-712 relay support, native ERC-8004 agent key support, X25519 key wraps for offline delegation, and automatic epoch rotation upon revocation.
+
+* **Envio HyperIndex (`indexer/`)**
+  Cloud hosted HyperIndex using HyperSync for historical blocks and RPC for real time transactions. It enables sub second memory reads without rate limiting.
+
+* **Developer SDK (`@engram/sdk`)**
+  Provides clean interfaces for vault operations such as approve, disclose, propose, and startBridge, alongside client application utilities like connectEngram and verifyAppSession.
+
+* **Agent Framework (`@engram/agent-kit`)**
+  A lightweight backend framework supporting OpenAI and KIMI tool loops, HMAC-sealed continuation tokens, rate limiting, and the selective disclosure bridge.
 
 ---
 
 ## Why Monad?
 
-AI memory writes happen in the middle of active user conversations. Waiting 15–30 seconds for standard blockchain block confirmations destroys conversational flow.
+AI memory writes happen in the middle of active user conversations. Waiting fifteen to thirty seconds for a standard blockchain block confirmation destroys conversational flow.
 
-Monad's **10,000 TPS**, **300 ms block times**, and **~600 ms finality** make decentralized AI memory practical for the first time:
-- **Fast confirmations:** From sending *"I'm vegetarian"* to an onchain confirmed transaction takes roughly **1.5 to 2.5 seconds**—completing well within an LLM's natural streaming reply window.
-- **Micro-transaction affordability:** Extremely low gas fees mean that encrypting individual memories, writing attributed entries, and rotating keys upon revocation are completely feasible for everyday users.
-- **Full EVM compatibility:** Leverages established standards including EIP-712, ERC-8004, and Multicall3 without compromises.
+Monad offers 10,000 TPS, 300 ms block times, and roughly 600 ms finality. That makes decentralized AI memory practical for everyday use.
+
+* **Fast confirmations**
+  From sending "I am vegetarian" to a confirmed onchain transaction takes roughly 1.5 to 2.5 seconds, which completes comfortably within an LLM streaming response window.
+
+* **Micro-transaction affordability**
+  Extremely low gas fees mean that encrypting individual memories, writing attributed entries, and rotating keys upon revocation cost negligible amounts.
+
+* **Full EVM compatibility**
+  Takes advantage of established standards including EIP-712, ERC-8004, and Multicall3 without requiring specialized adapters.
 
 ---
 
@@ -123,7 +151,7 @@ Integrating Engram into any existing AI agent requires just a few lines of code.
 npm install @engram/sdk @engram/agent-kit
 ```
 
-### 2. Client Side: Add the Memory Connect Button
+### 2. Client Side, Add the Memory Connect Button
 ```typescript
 import { connectEngram, openVaultBridge } from '@engram/sdk';
 
@@ -142,7 +170,7 @@ openVaultBridge({
 });
 ```
 
-### 3. Server Side: Query Context Selectively
+### 3. Server Side, Query Context Selectively
 ```typescript
 import { verifyAppSession, recall } from '@engram/agent-kit';
 
@@ -166,7 +194,7 @@ export async function handleChatMessage(req, res) {
 }
 ```
 
-For complete step-by-step instructions, see the [Integration Guide](docs/INTEGRATE.md) and explore the working standalone [Minimal Agent Example](examples/minimal-agent/agent.ts).
+For complete step by step instructions, see the [Integration Guide](docs/INTEGRATE.md) and check out the standalone [Minimal Agent Example](examples/minimal-agent/agent.ts).
 
 ---
 
@@ -175,7 +203,7 @@ For complete step-by-step instructions, see the [Integration Guide](docs/INTEGRA
 ```
 ├── apps/
 │   ├── vault/               # Next.js passkey vault, consent dialog, and bridge strip
-│   └── agent/               # Sage & Wayfarer demo agents (Next.js)
+│   └── agent/               # Sage and Wayfarer demo agents (Next.js)
 ├── chain/                   # MemoryRegistry Solidity contracts (Foundry)
 ├── contracts/               # Formal behavioral specifications and test cases
 ├── docs/                    # Integration and deployment guides
@@ -195,11 +223,11 @@ For complete step-by-step instructions, see the [Integration Guide](docs/INTEGRA
 ## Local Development
 
 ### Prerequisites
-- Node.js 22+
-- [Foundry](https://getfoundry.sh) (`forge`)
-- Docker (optional, for local Envio indexing)
+* Node.js 22+
+* [Foundry](https://getfoundry.sh) (`forge`)
+* Docker (optional, for local Envio indexing)
 
-### Setup & Build
+### Setup and Build
 ```bash
 # 1. Install dependencies and compile contracts
 npm install
@@ -209,60 +237,64 @@ cd chain && forge install && forge build && cd ..
 npm run -s build -w @engram/crypto -w @engram/sdk -w @engram/agent-kit
 
 # 3. Start the Vault application
-# (Copy apps/vault/.env.example to apps/vault/.env.local and add RELAYER_PRIVATE_KEY)
+# Copy apps/vault/.env.example to apps/vault/.env.local and add RELAYER_PRIVATE_KEY
 npm run dev -w @engram/vault                       # http://localhost:3100
 
 # 4. Start the Demo Agents
-# (Run agent registration to configure .env files, then provide your KIMI_API_KEY)
+# Run agent registration to configure env files, then provide your KIMI_API_KEY
 npx tsx scripts/register-agents.ts
 npm run dev:assistant -w @engram/agent             # http://localhost:3201 (Sage)
 npm run dev:planner -w @engram/agent               # http://localhost:3202 (Wayfarer)
 ```
 
-> **Tip:** Don't have a KIMI API key yet? Run `npx tsx scripts/dev-model.ts` to spin up a lightweight, zero-dependency local mock model on `http://127.0.0.1:8787/v1`.
+If you do not have a KIMI API key yet, run `npx tsx scripts/dev-model.ts` to spin up a local mock model on `http://127.0.0.1:8787/v1`.
 
 ---
 
-## Testing & Verification
+## Testing and Verification
 
-Engram maintains high testing standards across cryptographic primitives, smart contract safety, indexer reliability, and end-to-end user flows:
+Engram maintains high testing standards across cryptographic primitives, smart contract safety, indexer reliability, and end-to-end browser flows.
 
 ```bash
 # Run all unit and golden test suites against a local Anvil instance
 npm test
 
-# Run Foundry contract tests (unit, fuzzing, and regression tests)
+# Run Foundry contract tests including fuzzing and regression tests
 npm run test:chain
 
 # Run Envio indexer tests against real Monad testnet blocks
 cd indexer && npm run test:integration
 
-# Run Playwright end-to-end browser tests with virtual WebAuthn authenticators
+# Run Playwright browser tests with virtual WebAuthn authenticators
 npm run test:e2e
 ```
 
-- **Spec-driven development:** All contracts and protocols were specified in `contracts/` before implementation.
-- **Cryptographic test vectors:** Golden test vectors in `tests/golden` are verified against independent reference implementations.
-- **Security audits & fuzzing:** Automated fuzz testing and simulated adversarial scenarios ensure that quarantined writes and unverified delegations cannot bypass authorization.
-- **Regression tracker:** Documented in [BUGLOG.md](BUGLOG.md), containing root causes and permanent regression tests for every bug encountered during development.
+* **Spec driven development**
+  All contracts and protocols were specified in `contracts/` before implementation.
+* **Cryptographic test vectors**
+  Golden test vectors in `tests/golden` are verified against independent reference implementations.
+* **Security audits and fuzzing**
+  Automated fuzz testing and simulated adversarial scenarios ensure that quarantined writes and unverified delegations cannot bypass authorization.
+* **Regression tracker**
+  Documented in [BUGLOG.md](BUGLOG.md), containing root causes and permanent regression tests for every bug encountered during development.
 
 ---
 
 ## Built With Open Standards
 
-- **[Mera](https://github.com/category-labs/mera)** — WebAuthn PRF ceremony handling and deterministic key derivation.
-- **[@noble/curves & @noble/hashes](https://github.com/paulmillr)** — Audited cryptographic primitives (secp256k1, X25519, HKDF, SHA-256).
-- **[Envio HyperIndex](https://envio.dev)** — High-throughput blockchain data indexing with HyperSync.
-- **[Foundry](https://getfoundry.sh)** — Fast, modular Ethereum development framework.
-- **[OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts)** — Battle-tested ERC standards and EIP-712 implementations.
-- **[Viem](https://viem.sh)** — Type-safe TypeScript interface for Ethereum.
-- **[Next.js](https://nextjs.org)** & **React** — Fast, modern web applications.
-- **[Playwright](https://playwright.dev)** & **Vitest** — Robust testing frameworks with WebAuthn virtual authenticator support.
-- **[Moonshot AI (KIMI)](https://platform.moonshot.ai)** — Language model backing the Sage and Wayfarer conversational agents.
-- **[ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)** — Onchain identity registration for autonomous AI agents.
+* [Mera](https://github.com/category-labs/mera) for WebAuthn PRF ceremonies and deterministic key derivation
+* [@noble/curves and @noble/hashes](https://github.com/paulmillr) for audited cryptographic primitives
+* [Envio HyperIndex](https://envio.dev) for high throughput blockchain data indexing with HyperSync
+* [Foundry](https://getfoundry.sh) for smart contract development and testing
+* [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) for battle tested ERC standards and EIP-712 implementations
+* [Viem](https://viem.sh) for type safe Ethereum interactions
+* [Next.js](https://nextjs.org) and React for web applications
+* [Playwright](https://playwright.dev) and [Vitest](https://vitest.dev) for testing with virtual authenticators
+* [Moonshot AI KIMI](https://platform.moonshot.ai) for the conversational demo agent models
+* [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for onchain agent identity registration
 
 ---
 
 ## License
 
-This project is open-source under the [MIT License](LICENSE).
+This project is open source under the [MIT License](LICENSE).
