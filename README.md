@@ -135,6 +135,9 @@ npm run dev:planner -w @engram/agent              # http://localhost:3202
 No KIMI key yet? `npx tsx scripts/dev-model.ts` starts a free, rule-based stand-in. Point `KIMI_BASE_URL` at
 `http://127.0.0.1:8787/v1`. Its replies start with `[dev model]`.
 
+## Deploy
+Vercel and Railway configs are included. See [docs/DEPLOY.md](docs/DEPLOY.md) for the setup steps and env vars.
+
 ## Tests
 | Command | What |
 |---|---|

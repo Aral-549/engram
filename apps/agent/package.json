@@ -8,6 +8,8 @@
   "scripts": {
     "dev:assistant": "dotenv -e .env.assistant -- next dev --port 3201",
     "dev:planner": "dotenv -e .env.planner -- next dev --port 3202",
+    "build": "next build",
+    "start": "next start --port ${PORT:-3201}",
     "build:assistant": "dotenv -e .env.assistant -- next build",
     "build:planner": "dotenv -e .env.planner -- next build",
     "start:assistant": "dotenv -e .env.assistant -- next start --port 3201",
