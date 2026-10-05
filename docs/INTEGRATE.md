@@ -24,7 +24,7 @@ offline access (key grants) instead; see "Offline access" at the end.
 ## 1. Install
 The packages are not on npm yet. Build them from this repo as tarballs:
 ```bash
-git clone https://github.com/Aral-549/hippo && cd hippo && npm install
+git clone https://github.com/Aral-549/engram && cd engram && npm install
 npm run -s build -w @engram/crypto -w @engram/sdk -w @engram/agent-kit
 npm pack -w @engram/crypto -w @engram/sdk -w @engram/agent-kit --pack-destination /tmp/engram
 cd /path/to/your-app && npm install /tmp/engram/engram-*.tgz viem

@@ -136,7 +136,7 @@ Documented, not enforced (review 2026-10-01):
 
 ## Explicitly out of scope
 - Read enforcement and read-expiry (crypto.md; documented forward-only model).
-- Paying agents or charging per query (post-hackathon roadmap).
+- Paying agents or charging per query (future roadmap).
 - Validation Registry integration (ERC-8004 validation registry is "coming soon" on Monad).
 - Upgradeability. The contract is immutable; a new version is a new deployment.
 - P256 precompile. Owner keys are secp256k1 keys derived from the PRF so signing sessions are prompt-free;

@@ -35,3 +35,5 @@ apps/*/.next/
 apps/*/next-env.d.ts
 *.tsbuildinfo
 .next-*/
+.vercel
+.env*

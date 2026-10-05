@@ -69,7 +69,7 @@ Relay handler (vault server)
 - `createRelayHandler({ config, wallet, limits })` -> `(body) => Promise<{ status, body }>`; the vault's
   `POST /api/relay` is a thin wrapper.
 
-## Session scoping (Mera UX bounty)
+## Session scoping (Mera UX)
 | Action | Passkey prompt? | Why |
 |---|---|---|
 | sign in / sign up | yes (one ceremony) | root of all keys |

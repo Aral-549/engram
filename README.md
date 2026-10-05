@@ -28,7 +28,7 @@ Engram removes the key from the agent entirely:
 - **Offline access when you choose it.** Agents that must work while you are away can still be given a key to a
   folder (expiring, revocable with key rotation). The consent screen warns that such an agent can keep copies.
 
-Built solo for the Monad Metropolis hackathon, Trust, Identity & AI Infrastructure track.
+An open-source, passkey-secured memory layer for AI agents on Monad.
 
 ## Try it
 | | |
@@ -151,9 +151,6 @@ How the code was built: specs first (`contracts/`). Golden tests are written fro
 are then frozen. A separate adversarial pass tries to break each module. Every bug it finds goes into `BUGLOG.md`
 with a permanent regression test.
 
-## Built during the hackathon
-All code in this repository was written during the Metropolis build window (from 2026-10-01). No pre-existing code.
-
 ## Third-party code and services
 - [@category-labs/mera](https://github.com/category-labs/mera) (MIT OR Apache-2.0): passkey PRF ceremonies, EVM address derivation
 - [@noble/curves, @noble/hashes](https://github.com/paulmillr) (MIT): secp256k1, X25519, HKDF, SHA-256
@@ -169,7 +166,7 @@ All code in this repository was written during the Metropolis build window (from
 - Fonts: Instrument Serif and IBM Plex (SIL Open Font License) via Google Fonts
 
 ## AI tool disclosure
-This project was built with AI coding assistance, which the hackathon rules allow (section 4.1):
+This project was built with AI coding assistance:
 - **Claude Code (Anthropic, Claude Opus 5.5)** drafted the specs and wrote the implementation and tests. Separate
   Claude agent passes ran adversarial reviews of each module.
 - Safeguards in the workflow:

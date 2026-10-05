@@ -5,7 +5,7 @@ import { useSession } from "./SessionProvider";
 import { Words } from "./Words";
 
 const REGISTRY = "0x733d1Bf4DC13B721a2Ce3DDCFb444795eFF59d31";
-const REPO = "https://github.com/Aral-549/hippo";
+const REPO = "https://github.com/Aral-549/engram";
 
 const steps = [
   ["One passkey", "Face ID, Touch ID or your phone. There's no seed phrase to write down and no extension to install, and the same passkey opens your vault on any of your devices."],

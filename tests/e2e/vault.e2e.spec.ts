@@ -1,5 +1,5 @@
 // End-to-end: onboarding -> first memory -> stateless unlock -> consent grant -> revoke, against Monad testnet.
-// Covers contracts/apps.md cases 1, 5, 7 and the Mera UX bounty checks (one ceremony, time to first tx, stateless test).
+// Covers contracts/apps.md cases 1, 5, 7 and the Mera UX checks (one ceremony, time to first tx, stateless test).
 import { expect, test, type Page } from "@playwright/test";
 
 async function addPasskeyProvider(page: Page) {
