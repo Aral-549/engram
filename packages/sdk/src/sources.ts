@@ -41,6 +41,14 @@ export function logsSource(opts: { rpcUrl: string; registry: Hex; fromBlock: big
     try {
       const head = await publicClient.getBlockNumber({ cacheTime: 0 }); // never a cached head (BUGLOG S7)
       if (range <= 0n) throw new EngramError("INPUT_INVALID", "blockRange must be positive");
+      const totalBlocks = head > opts.fromBlock ? head - opts.fromBlock : 0n;
+      const totalRequests = range > 0n ? (totalBlocks + range - 1n) / range : 0n;
+      if (totalRequests > 50n) {
+        throw new EngramError(
+          "SOURCE_UNAVAILABLE",
+          `Chain history is too deep for direct RPC event scanning (${totalRequests} queries required). Please configure an indexer.`
+        );
+      }
       const out: Array<{ args: any; blockNumber: bigint; logIndex: number; transactionHash: Hex }> = [];
       for (let from = opts.fromBlock; from <= head; from += range) {
         const to = from + range - 1n > head ? head : from + range - 1n;

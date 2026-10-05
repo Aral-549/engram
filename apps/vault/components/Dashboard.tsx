@@ -63,6 +63,15 @@ export function Dashboard() {
         </button>
       </aside>
       <section className="px-6 py-8 md:px-12 md:py-12">
+        {!process.env.NEXT_PUBLIC_INDEXER_URL ? (
+          <div role="status" className="mb-6 rounded-sm border border-amber-600/30 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p className="font-medium">Indexer not configured (NEXT_PUBLIC_INDEXER_URL)</p>
+            <p className="mt-1 text-xs text-amber-800">
+              Your vault saves transactions directly on Monad testnet, but reading memories back requires an indexer.
+              Host the indexer from <code className="rounded bg-amber-100 px-1 py-0.5 font-mono">indexer/</code> on Envio Cloud (<a href="https://envio.dev/app" target="_blank" rel="noreferrer" className="underline font-medium">envio.dev/app</a>) and set <code className="rounded bg-amber-100 px-1 py-0.5 font-mono">NEXT_PUBLIC_INDEXER_URL</code> in Vercel.
+            </p>
+          </div>
+        ) : null}
         {error ? (
           <div role="alert" className="mb-6 flex items-start justify-between gap-4 rounded-sm border border-rust/40 bg-rust-soft px-4 py-3 text-sm text-rust">
             <span>{error}</span>
@@ -178,7 +187,13 @@ function MemoryView() {
       </form>
 
       <ul className="mt-8 space-y-4">
-        {spaces === null ? <li className="text-ink-soft">Opening your memory…</li> : null}
+        {spaces === null ? (
+          <li className="text-ink-soft">
+            {!process.env.NEXT_PUBLIC_INDEXER_URL
+              ? "Indexer not configured. Set NEXT_PUBLIC_INDEXER_URL to load and view your memories."
+              : "Opening your memory…"}
+          </li>
+        ) : null}
         {spaces && entries.length === 0 ? <li className="text-ink-soft">Nothing in {active} yet.</li> : null}
         {/* Reviewed proposals are hidden: a confirmed one lives on as your copy, a rejected one is gone. */}
         {entries.filter((e) => e.review !== "confirmed" && e.review !== "rejected").map((e, i) => (

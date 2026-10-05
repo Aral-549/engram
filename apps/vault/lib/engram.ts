@@ -66,6 +66,8 @@ export function explain(e: unknown): string {
       return "A different passkey answered. Approve with the passkey you unlocked the vault with.";
     case "INPUT_INVALID":
       return (e as Error).message;
+    case "SOURCE_UNAVAILABLE":
+      return "Memory indexer is unavailable or not configured. To read and view your memories on Monad, set NEXT_PUBLIC_INDEXER_URL.";
     default:
       return "Something went wrong. Nothing was shared.";
   }
